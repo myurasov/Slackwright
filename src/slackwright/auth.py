@@ -431,6 +431,176 @@ def login_non_interactive(
 
 
 # ---------------------------------------------------------------------------
+# Headless token refresh
+# ---------------------------------------------------------------------------
+
+
+class TokenRefreshError(RuntimeError):
+    """Raised when a headless refresh can't produce a fresh xoxc token.
+
+    Distinct from ``TimeoutError`` (interactive login flow) so callers
+    can decide whether to fall back to a full re-login or just bubble
+    the original ``invalid_auth`` to the user.
+    """
+
+
+_REFRESH_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def _refresh_diagnostics(page: Any) -> str:
+    """Best-effort snapshot of where the headless browser ended up.
+
+    Helps the user understand why ``boot_data`` wasn't there: usually
+    Slack redirected to a sign-in page, an org-picker, or a "download
+    the app" landing.
+    """
+    try:
+        url = page.url
+    except Exception:
+        url = "(unknown)"
+    try:
+        title = page.title()
+    except Exception:
+        title = "(unknown)"
+    try:
+        probe = page.evaluate(
+            "() => ({"
+            "  hasBoot: typeof window.boot_data === 'object',"
+            "  bootKeys: window.boot_data ? Object.keys(window.boot_data).slice(0, 8) : [],"
+            "  hasLocalConfig: !!localStorage.getItem('localConfig_v2'),"
+            "  loginVisible: !!document.querySelector('input[type=email], #email, .p-signin')"
+            "})"
+        )
+    except Exception:
+        probe = {}
+    return (
+        f"  diagnostics: url={url!r} title={title!r} "
+        f"hasBoot={probe.get('hasBoot')!r} "
+        f"bootKeys={probe.get('bootKeys')!r} "
+        f"hasLocalConfig={probe.get('hasLocalConfig')!r} "
+        f"loginVisible={probe.get('loginVisible')!r}"
+    )
+
+
+def refresh_token_headless(
+    bundle: AuthBundle,
+    *,
+    state_dir: Path,
+    timeout_s: int = 60,
+    executable_path: str | None = None,
+    verbose: bool = False,
+) -> AuthBundle:
+    """Mint a fresh ``xoxc`` token from the existing browser session.
+
+    Slack's ``xoxc`` rotates often (~30 min on Enterprise Grid). The
+    cookies stay valid much longer, so we can replay them in a
+    short-lived headless Chromium, navigate to the workspace, read
+    ``window.boot_data.api_token`` again, and persist the new token —
+    no user interaction required.
+
+    We launch with Chromium's *new* headless mode (``--headless=new``)
+    and a non-Headless UA so Slack doesn't redirect us to its
+    download-the-app landing page (the old headless mode trips
+    standard "is this a bot?" heuristics on Enterprise Grid).
+
+    Raises :class:`TokenRefreshError` if Chromium loads but
+    ``boot_data`` is missing within ``timeout_s`` (cookies fully
+    expired → full re-login needed) or the storage state isn't on
+    disk.
+    """
+    from playwright.sync_api import sync_playwright
+
+    from .paths import storage_state_path
+
+    ssp = storage_state_path(state_dir)
+    if not ssp.exists():
+        raise TokenRefreshError(f"missing storage state at {ssp}; run `slackwright login`")
+
+    with sync_playwright() as pw:
+        launch_kwargs: dict[str, Any] = {
+            "headless": True,
+            # The new headless mode shares the production rendering
+            # pipeline with regular Chromium and doesn't advertise
+            # ``HeadlessChrome`` in the UA. Falling back to old headless
+            # if the bundled Chromium is older than 119 is fine — the
+            # extra arg is silently ignored.
+            "args": ["--headless=new"],
+        }
+        if executable_path:
+            launch_kwargs["executable_path"] = executable_path
+        browser = pw.chromium.launch(**launch_kwargs)
+        try:
+            context = browser.new_context(
+                storage_state=str(ssp),
+                viewport={"width": 1280, "height": 900},
+                user_agent=_REFRESH_UA,
+            )
+            # Mask navigator.webdriver — Slack's web client checks it
+            # in some flows and silently degrades when it's true.
+            context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', "
+                "{get: () => undefined});"
+            )
+            try:
+                page = context.new_page()
+                try:
+                    page.goto(
+                        bundle.workspace_url,
+                        wait_until="domcontentloaded",
+                        timeout=timeout_s * 1000,
+                    )
+                except Exception as e:
+                    raise TokenRefreshError(
+                        f"could not load {bundle.workspace_url} for token refresh: {e}"
+                    ) from e
+                deadline = time.time() + timeout_s
+                data: dict[str, Any] | None = None
+                while time.time() < deadline:
+                    try:
+                        data = page.evaluate(EXTRACT_BOOT_DATA_JS)
+                    except Exception:
+                        data = None
+                    if data and data.get("api_token"):
+                        break
+                    time.sleep(0.5)
+                if not data or not data.get("api_token"):
+                    diag = _refresh_diagnostics(page) if verbose else ""
+                    raise TokenRefreshError(
+                        "boot_data.api_token not present — session cookies likely expired. "
+                        "Run `slackwright login` to re-authenticate."
+                        + (f"\n{diag}" if diag else "")
+                    )
+                # Persist the rotated cookies that Slack set during the
+                # navigation back to the storage-state file. Failure here
+                # isn't fatal — the next run still works with the old jar.
+                with contextlib.suppress(Exception):
+                    context.storage_state(path=str(ssp))
+                    os.chmod(ssp, 0o600)
+            finally:
+                context.close()
+        finally:
+            browser.close()
+
+    new_bundle = dataclasses.replace(
+        bundle,
+        api_token=data["api_token"],
+        team_id=data.get("team_id") or bundle.team_id,
+        enterprise_id=data.get("enterprise_id") or bundle.enterprise_id,
+        user_id=data.get("user_id") or bundle.user_id,
+        user_name=data.get("username") or bundle.user_name,
+        user_real_name=data.get("real_name") or bundle.user_real_name,
+        user_email=data.get("email") or bundle.user_email,
+        extracted_at=time.time(),
+    )
+    save_auth(state_dir, new_bundle)
+    return new_bundle
+
+
+# ---------------------------------------------------------------------------
 # Validation helpers (small, pure — covered by unit tests)
 # ---------------------------------------------------------------------------
 

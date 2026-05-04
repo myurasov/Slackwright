@@ -45,17 +45,19 @@ import datetime as dt
 import hashlib
 import json
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from .resolver import EntityResolver
+from .resolver import EntityResolver, _channel_from_payload
 
 ARCHIVE_SCHEMA = 2
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
+_USER_MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)")
 
 
 def slugify(text: str, max_len: int = 28) -> str:
@@ -115,6 +117,7 @@ class WriteStats:
     created: int = 0
     updated: int = 0
     noop: int = 0
+    dropped: int = 0
     by_month: dict[str, int] = field(default_factory=dict)
     by_channel_type: dict[str, int] = field(default_factory=dict)
     user_ids_seen: set[str] = field(default_factory=set)
@@ -153,21 +156,25 @@ class ArchiveWriter:
         self._matches_jsonl_path = out_root / "matches.jsonl"
         self._raw_dir = out_root / "_raw"
         self._captured_at = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+        self._drop_warned = False
         out_root.mkdir(parents=True, exist_ok=True)
-        # Truncate the per-run jsonl ledger at start (one ledger per run).
-        if self._format != "raw" and self._matches_jsonl_path.exists():
-            self._matches_jsonl_path.unlink()
+        # ``matches.jsonl`` is append-and-dedup across runs: prior rows
+        # stay on disk so two consecutive fetches into the same --out
+        # produce a real union, while ``(channel_id, ts)`` deduping
+        # avoids double-counting when both runs surface the same
+        # message.
+        self._jsonl_seen_keys: set[tuple[str, str]] = self._load_jsonl_keys()
 
     def write_match(self, msg: dict[str, Any]) -> str:
         """Write one Slack search match to disk. Returns
-        ``'created'`` / ``'updated'`` / ``'noop'``."""
+        ``'created'`` / ``'updated'`` / ``'noop'`` / ``'dropped'``."""
         ts = msg.get("ts")
         if not ts:
-            return "noop"
+            return self._drop("missing ts", msg)
         ch = msg.get("channel") or {}
         cid = (ch.get("id") if isinstance(ch, dict) else ch) or msg.get("channel_id") or ""
         if not cid:
-            return "noop"
+            return self._drop("missing channel id", msg)
 
         if self._format == "raw":
             self._raw_dir.mkdir(parents=True, exist_ok=True)
@@ -183,6 +190,22 @@ class ArchiveWriter:
             return "created"
 
         return self._write_archive_one(msg, cid, ts)
+
+    def _drop(self, reason: str, msg: dict[str, Any]) -> str:
+        # Silent drops used to mask schema drift (e.g. Slack returning
+        # grouped {channel, messages:[…]} envelopes with no top-level ts).
+        # Track + warn once so it can never zero out a run unnoticed.
+        self.stats.dropped += 1
+        if not self._drop_warned:
+            self._drop_warned = True
+            sample_keys = sorted(msg.keys()) if isinstance(msg, dict) else []
+            sys.stderr.write(
+                f"[slackwright] WARN: dropped match — {reason}. "
+                f"Top-level keys: {sample_keys}. "
+                f"This usually means Slack changed the search response shape; "
+                f"open an issue with this stderr if matches keep dropping.\n"
+            )
+        return "dropped"
 
     def _write_archive_one(self, msg: dict[str, Any], cid: str, ts: str) -> str:
         channel_meta = self._resolver.get_channel(cid) if self._resolver else None
@@ -243,6 +266,10 @@ class ArchiveWriter:
     # --- side outputs ---
 
     def _append_jsonl(self, msg: dict[str, Any], cid: str) -> None:
+        ts = msg.get("ts") or ""
+        if (cid, ts) in self._jsonl_seen_keys:
+            return
+        self._jsonl_seen_keys.add((cid, ts))
         ch = msg.get("channel") or {}
         row = {
             "channel_id": cid,
@@ -259,9 +286,58 @@ class ArchiveWriter:
         with self._matches_jsonl_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
+    def _load_jsonl_keys(self) -> set[tuple[str, str]]:
+        """Load existing ``(channel_id, ts)`` pairs out of ``matches.jsonl``.
+
+        Used by the append-and-dedup path so a second run into the
+        same ``--out`` doesn't double-write rows for messages the
+        first run already recorded. Failures are best-effort: a
+        corrupt or empty ledger just yields an empty set, and the
+        run continues writing fresh rows.
+        """
+        if not self._matches_jsonl_path.exists():
+            return set()
+        seen: set[tuple[str, str]] = set()
+        try:
+            with self._matches_jsonl_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    cid = str(row.get("channel_id") or "")
+                    ts = str(row.get("ts") or "")
+                    if cid and ts:
+                        seen.add((cid, ts))
+        except Exception:
+            return seen
+        return seen
+
     def _track_ids(self, msg: dict[str, Any], cid: str) -> None:
         if cid:
             self.stats.channel_ids_seen.add(cid)
+            # Slack's search response embeds a full channel envelope —
+            # name, type flags, members. Seed the resolver from it so we
+            # don't waste a `conversations.info` round-trip per channel
+            # later (and so we still have a name for MPIMs / private
+            # channels that conversations.info can't see on Enterprise
+            # Grid).
+            ch_obj = msg.get("channel")
+            if self._resolver is not None and isinstance(ch_obj, dict) and ch_obj.get("name"):
+                rec = _channel_from_payload(ch_obj)
+                if rec is not None and self._resolver.get_channel(cid) is None:
+                    self._resolver.remember_channel(rec)
+            # IMs: Slack uses the partner's user id as the channel name
+            # (and sometimes echoes it back in ``channel.user``). Without
+            # this, a DM where only the SA user spoke leaves the partner
+            # unresolved — the report ends up showing "DM with U…".
+            if isinstance(ch_obj, dict) and ch_obj.get("is_im"):
+                partner = ch_obj.get("user") or ch_obj.get("name")
+                if isinstance(partner, str) and partner.startswith(("U", "W")):
+                    self.stats.user_ids_seen.add(partner)
         u = msg.get("user")
         if u:
             self.stats.user_ids_seen.add(u)
@@ -269,6 +345,12 @@ class ArchiveWriter:
             au = att.get("author_id")
             if au:
                 self.stats.user_ids_seen.add(au)
+        # ``<@Uxxx>`` mentions in message text need to be resolvable too,
+        # otherwise the report renders the raw id inside message bodies.
+        text = msg.get("text") or ""
+        if "<@" in text:
+            for match in _USER_MENTION_RE.finditer(text):
+                self.stats.user_ids_seen.add(match.group(1))
 
     def _bump_counts(self, channel_type: str | None, ts: str) -> None:
         try:
@@ -350,23 +432,70 @@ class ArchiveWriter:
         extra: dict[str, Any] | None = None,
         cost: dict[str, Any] | None = None,
     ) -> Path:
-        idx: dict[str, Any] = {
-            "schema_version": 1,
-            "tool": "slackwright",
-            "last_updated": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
-            "captured_at": self._captured_at,
-            "format": self._format,
+        """Persist ``_index.yaml`` accumulating per-run records.
+
+        The index is **append-and-aggregate**: every run appends a
+        ``run`` entry under ``runs:`` capturing its plan / query /
+        counts / cost / search_stats, then top-level fields are
+        recomputed:
+
+          - ``counts.*``: summed across all runs (so they reflect the
+            total work done in this --out, not just the latest run)
+          - ``plan`` / ``query`` / ``cost``: latest run's values, kept
+            at top level for backward compatibility with readers that
+            don't know about the multi-run schema
+          - ``captured_at``: timestamp of the **first** run; the
+            ``last_updated`` field tracks the most recent
+
+        A legacy single-run index (no ``runs:``) is migrated in place
+        on first write by promoting its top-level fields into the
+        first ``run`` entry.
+        """
+        finished_at = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+        run_record: dict[str, Any] = {
             "plan": plan_summary,
             "query": search_query,
+            "captured_at": self._captured_at,
+            "finished_at": finished_at,
+            "format": self._format,
             "counts": {
                 "created": self.stats.created,
                 "updated": self.stats.updated,
                 "noop": self.stats.noop,
+                "dropped": self.stats.dropped,
                 "by_month": dict(sorted(self.stats.by_month.items())),
                 "by_channel_type": dict(sorted(self.stats.by_channel_type.items())),
                 "users_seen": len(self.stats.user_ids_seen),
                 "channels_seen": len(self.stats.channel_ids_seen),
             },
+        }
+        if cost is not None:
+            run_record["cost"] = cost
+        if extra:
+            run_record["extra"] = extra
+
+        existing = read_index(self._out) or {}
+        prior_runs = (
+            list(existing["runs"])
+            if isinstance(existing.get("runs"), list)
+            else _migrate_legacy_index_to_run(existing)
+        )
+        all_runs = prior_runs + [run_record]
+        first_captured_at = (
+            existing.get("captured_at")
+            or (prior_runs[0].get("captured_at") if prior_runs else self._captured_at)
+        )
+
+        idx: dict[str, Any] = {
+            "schema_version": 2,
+            "tool": "slackwright",
+            "captured_at": first_captured_at,
+            "last_updated": finished_at,
+            "format": self._format,
+            "plan": plan_summary,
+            "query": search_query,
+            "counts": _aggregate_counts(all_runs),
+            "runs": all_runs,
         }
         if cost is not None:
             idx["cost"] = cost
@@ -378,6 +507,67 @@ class ArchiveWriter:
             encoding="utf-8",
         )
         return target
+
+
+def _migrate_legacy_index_to_run(existing: dict[str, Any]) -> list[dict[str, Any]]:
+    """Promote a legacy (schema v1) single-run index into a one-element runs list.
+
+    Pre-multi-run archives have ``plan`` / ``query`` / ``counts`` /
+    ``cost`` / ``extra`` at the top level. We don't want to lose that
+    history when someone runs a second fetch into the same --out, so
+    we synthesize the equivalent ``run`` record and prepend it before
+    appending the new run.
+    """
+    if not existing.get("plan") and not existing.get("query") and not existing.get("counts"):
+        return []
+    legacy: dict[str, Any] = {
+        "plan": existing.get("plan"),
+        "query": existing.get("query"),
+        "captured_at": existing.get("captured_at"),
+        "finished_at": existing.get("last_updated"),
+        "format": existing.get("format"),
+        "counts": existing.get("counts") or {},
+    }
+    if existing.get("cost") is not None:
+        legacy["cost"] = existing["cost"]
+    if existing.get("extra") is not None:
+        legacy["extra"] = existing["extra"]
+    return [legacy]
+
+
+def _aggregate_counts(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Sum per-run counts into a single top-level summary.
+
+    ``users_seen`` / ``channels_seen`` are summed too — they're not
+    deduped across runs because the underlying ``WriteStats`` only
+    knew about the run-local set. The actual on-disk truth lives in
+    ``_users/`` / ``_channels/`` (which **is** unioned across runs).
+    """
+    out: dict[str, Any] = {
+        "created": 0,
+        "updated": 0,
+        "noop": 0,
+        "dropped": 0,
+        "by_month": {},
+        "by_channel_type": {},
+        "users_seen": 0,
+        "channels_seen": 0,
+    }
+    for run in runs:
+        c = run.get("counts") or {}
+        for k in ("created", "updated", "noop", "dropped", "users_seen", "channels_seen"):
+            v = c.get(k)
+            if isinstance(v, int):
+                out[k] += v
+        for month, n in (c.get("by_month") or {}).items():
+            if isinstance(n, int):
+                out["by_month"][month] = out["by_month"].get(month, 0) + n
+        for ctype, n in (c.get("by_channel_type") or {}).items():
+            if isinstance(n, int):
+                out["by_channel_type"][ctype] = out["by_channel_type"].get(ctype, 0) + n
+    out["by_month"] = dict(sorted(out["by_month"].items()))
+    out["by_channel_type"] = dict(sorted(out["by_channel_type"].items()))
+    return out
 
 
 def read_index(out_dir: Path) -> dict[str, Any] | None:
@@ -396,17 +586,35 @@ def read_index(out_dir: Path) -> dict[str, Any] | None:
         return None
 
 
-def previously_completed_chunks(out_dir: Path) -> set[str]:
-    """Return chunk labels that the prior run finished successfully.
+def previously_completed_chunks(out_dir: Path, *, query: str | None = None) -> set[str]:
+    """Return chunk labels that a prior run finished successfully.
 
-    Reads from the index's ``extra.search_stats.chunks_completed`` block
-    written by :meth:`ArchiveWriter.write_index`. Empty set if no prior
-    run, or if the prior run didn't record chunk completion (e.g. it was
-    a one-shot fetch with no date range).
+    With multi-run archives we match by ``query`` so ``--resume`` only
+    skips chunks completed by a prior run of the *same* query — mixing
+    ``--from me`` and ``--to me`` runs in one --out shouldn't trick a
+    resume into thinking the other query's chunks are done.
+
+    Falls back to the latest run's ``chunks_completed`` when ``query``
+    is unspecified, and to the legacy v1 ``extra.search_stats.chunks_completed``
+    field for archives written before the multi-run schema.
     """
     idx = read_index(out_dir)
     if not idx:
         return set()
+    runs = idx.get("runs") if isinstance(idx, dict) else None
+    if isinstance(runs, list) and runs:
+        candidates = (
+            [r for r in runs if isinstance(r, dict) and r.get("query") == query]
+            if query is not None
+            else [runs[-1]] if isinstance(runs[-1], dict) else []
+        )
+        out: set[str] = set()
+        for r in candidates:
+            ss = ((r.get("extra") or {}).get("search_stats") or {}) if isinstance(r, dict) else {}
+            for c in ss.get("chunks_completed") or []:
+                out.add(str(c))
+        return out
+    # Legacy v1 schema: top-level ``extra.search_stats``.
     extra = (idx.get("extra") or {}) if isinstance(idx, dict) else {}
     ss = (extra.get("search_stats") or {}) if isinstance(extra, dict) else {}
     completed = ss.get("chunks_completed") or []

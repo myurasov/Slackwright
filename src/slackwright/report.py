@@ -341,6 +341,17 @@ a:hover { text-decoration: underline; }
   gap: 10px;
 }
 .channel summary::-webkit-details-marker { display: none; }
+.channel summary::before {
+  content: "";
+  display: inline-block;
+  width: 0; height: 0;
+  border-style: solid;
+  border-width: 5px 0 5px 7px;
+  border-color: transparent transparent transparent var(--fg-mute);
+  transition: transform 0.12s ease;
+  flex-shrink: 0;
+}
+.channel[open] summary::before { transform: rotate(90deg); }
 .channel .ch-name { font-weight: 700; font-size: 15px; }
 .channel .ch-type {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
@@ -410,10 +421,22 @@ footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border
 # ---------------------------------------------------------------------------
 
 
-def render_report(out_dir: Path, *, target: Path | None = None, title: str | None = None) -> Path:
+def render_report(
+    out_dir: Path,
+    *,
+    target: Path | None = None,
+    title: str | None = None,
+    state_dir: Path | None = None,
+) -> Path:
     """Read ``out_dir`` and write ``out_dir/report.html`` (or ``target``).
 
-    Returns the path that was written.
+    Returns the path that was written. When ``state_dir`` is provided
+    (the slackwright state dir, typically ``~/.cache/slackwright``), the
+    renderer also reads the resolver's persistent ``users.json`` /
+    ``channels.json`` caches as a fallback for any id that the
+    archive's own ``_users/`` / ``_channels/`` directories couldn't
+    resolve. Useful for older archives written before the writer
+    started seeding all referenced users.
     """
     out_dir = Path(out_dir)
     if not out_dir.exists():
@@ -423,6 +446,8 @@ def render_report(out_dir: Path, *, target: Path | None = None, title: str | Non
 
     users = _load_user_cache(out_dir)
     channels = _load_channel_cache(out_dir)
+    if state_dir is not None:
+        _merge_state_dir_caches(state_dir, users, channels)
     index = _read_index_yaml(out_dir)
 
     messages = sorted(
@@ -576,9 +601,35 @@ def _render_channel_section(
     sa_user_id: str | None,
 ) -> str:
     chan = channels.get(cid) or {}
-    name = chan.get("name") or cid
-    ctype = chan.get("type") or "channel"
+    # Channel cache yamls written before the resolver-seeding fix may
+    # have ``name: null`` for MPIMs / private channels that
+    # ``conversations.info`` couldn't resolve. The Slack search response
+    # always embeds a usable name on each match, so fall back to that.
+    raw_name = chan.get("name") or _channel_name_from_msgs(msgs)
+    ctype = chan.get("type") or _channel_type_from_msgs(msgs) or "channel"
     purpose = chan.get("purpose") or chan.get("topic") or ""
+
+    if ctype == "im":
+        # Slack stores IMs (DMs) with the other party's user id as the
+        # channel name. Render the partner's real name instead so the
+        # collapsed summary is human-readable.
+        other_uid = chan.get("user") or (raw_name if raw_name and raw_name.startswith(("U", "W")) else None)
+        if not other_uid:
+            other_uid = _other_user_in_im(msgs, sa_user_id)
+        partner = users.get(other_uid) if other_uid else None
+        partner_name = None
+        if partner:
+            partner_name = (
+                partner.get("real_name")
+                or partner.get("display_name")
+                or partner.get("name")
+            )
+        # Always emit ``DM with …`` for visual consistency, even when
+        # we couldn't resolve the partner — a raw ``Uxxxx`` makes the
+        # IM look like a regular channel.
+        name = f"DM with {partner_name or other_uid or cid}"
+    else:
+        name = raw_name or cid
 
     name_prefix = "#" if ctype == "channel" else ""
     summary = (
@@ -595,7 +646,7 @@ def _render_channel_section(
     for thread in by_thread:
         for i, m in enumerate(thread):
             rendered_msgs.append(_render_message(m, users, sa_user_id, is_reply=(i > 0)))
-    return f'<details class="channel" open>{summary}{"".join(rendered_msgs)}</details>'
+    return f'<details class="channel">{summary}{"".join(rendered_msgs)}</details>'
 
 
 def _render_message(
@@ -672,6 +723,45 @@ def _render_reactions(reactions: list[dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _merge_state_dir_caches(
+    state_dir: Path,
+    users: dict[str, dict[str, Any]],
+    channels: dict[str, dict[str, Any]],
+) -> None:
+    """Fill in missing/null entries from the resolver's persistent caches.
+
+    The archive's per-run caches (``_users/`` / ``_channels/``) only
+    cover ids the writer saw. The state-dir caches accumulate across
+    every prior run, so a quiet IM partner from a previous fetch may be
+    resolvable here even if the current archive never saw their
+    messages. Per-archive entries always win — this only fills gaps.
+    """
+    users_json = state_dir / "users.json"
+    channels_json = state_dir / "channels.json"
+    if users_json.exists():
+        try:
+            payload = json.loads(users_json.read_text(encoding="utf-8"))
+            for uid, rec in (payload.get("users") or {}).items():
+                if not isinstance(rec, dict) or not rec.get("real_name") and not rec.get("name"):
+                    continue
+                existing = users.get(uid) or {}
+                if not (existing.get("real_name") or existing.get("display_name") or existing.get("name")):
+                    users[uid] = {**rec, **{k: v for k, v in existing.items() if v}}
+        except Exception:
+            pass
+    if channels_json.exists():
+        try:
+            payload = json.loads(channels_json.read_text(encoding="utf-8"))
+            for cid, rec in (payload.get("channels") or {}).items():
+                if not isinstance(rec, dict) or not rec.get("name"):
+                    continue
+                existing = channels.get(cid) or {}
+                if not existing.get("name"):
+                    channels[cid] = {**rec, **{k: v for k, v in existing.items() if v}}
+        except Exception:
+            pass
+
+
 def _read_index_yaml(out_dir: Path) -> dict[str, Any] | None:
     p = out_dir / "_index.yaml"
     if not p.exists():
@@ -691,6 +781,48 @@ def _detect_sa_user_id(messages: list[_Message]) -> str | None:
     if not counts:
         return None
     return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
+def _channel_name_from_msgs(msgs: list[_Message]) -> str | None:
+    """Pick the first non-null ``channel.name`` from any message in the group."""
+    for m in msgs:
+        ch = m.raw.get("channel")
+        if isinstance(ch, dict):
+            name = ch.get("name")
+            if name:
+                return str(name)
+    return None
+
+
+def _other_user_in_im(msgs: list[_Message], sa_user_id: str | None) -> str | None:
+    """For an IM channel, find the user id that isn't the logged-in user.
+
+    Useful when the channel cache doesn't carry an explicit ``user``
+    field — pick whichever participant authored at least one message
+    and isn't the SA user.
+    """
+    for m in msgs:
+        uid = m.user_id
+        if uid and uid != sa_user_id:
+            return uid
+    return None
+
+
+def _channel_type_from_msgs(msgs: list[_Message]) -> str | None:
+    """Infer a channel type from inline ``channel.is_*`` flags on a hit."""
+    for m in msgs:
+        ch = m.raw.get("channel")
+        if not isinstance(ch, dict):
+            continue
+        if ch.get("is_im"):
+            return "im"
+        if ch.get("is_mpim"):
+            return "mpim"
+        if ch.get("is_group"):
+            return "group"
+        if ch.get("is_channel"):
+            return "channel"
+    return None
 
 
 def _group_by_channel(messages: list[_Message]) -> dict[str, list[_Message]]:

@@ -192,14 +192,20 @@ class TestArchiveWriterArchiveFormat:
         assert len(rows) == 2
         assert all(json.loads(r)["channel_id"] for r in rows)
 
-    def test_truncates_jsonl_per_run(self, out_dir: Path) -> None:
+    def test_jsonl_unions_across_runs(self, out_dir: Path) -> None:
+        # Consecutive runs into the same --out should produce a real
+        # union — prior rows preserved, new rows appended, dupes
+        # (same channel_id+ts seen by both runs) collapsed.
         w1 = ArchiveWriter(out_dir, sa_user_id="UALICE00", format="archive")
         w1.write_match(_match("CGENERAL", "1745613606.000000"))
-        w2 = ArchiveWriter(out_dir, sa_user_id="UALICE00", format="archive")  # truncates
+        w1.write_match(_match("CSHARED", "1745613608.000000"))
+        w2 = ArchiveWriter(out_dir, sa_user_id="UALICE00", format="archive")
+        w2.write_match(_match("CSHARED", "1745613608.000000"))  # dup → skipped
         w2.write_match(_match("CENGTEAM", "1745613607.000000"))
         rows = (out_dir / "matches.jsonl").read_text().strip().splitlines()
-        assert len(rows) == 1
-        assert json.loads(rows[0])["channel_id"] == "CENGTEAM"
+        assert len(rows) == 3
+        ids = [json.loads(r)["channel_id"] for r in rows]
+        assert ids == ["CGENERAL", "CSHARED", "CENGTEAM"]
 
 
 class TestArchiveWriterIndex:
@@ -313,3 +319,86 @@ class TestPreviouslyCompletedChunks:
         idx = read_index(out_dir)
         assert idx["cost"]["api_calls"] == 12
         assert idx["cost"]["elapsed_ms"] == 5000
+
+
+class TestMultiRunIndex:
+    def test_index_accumulates_runs(self, out_dir: Path) -> None:
+        # Run 1: from-me
+        w1 = ArchiveWriter(out_dir, sa_user_id="UALICE00", format="archive")
+        w1.write_match(_match("CGENERAL", "1745613600.000000", user="UALICE00"))
+        w1.write_index(plan_summary="from=@alice", search_query="from:@alice", cost={"api_calls": 4})
+
+        # Run 2: to-me
+        w2 = ArchiveWriter(out_dir, sa_user_id="UALICE00", format="archive")
+        w2.write_match(_match("CGENERAL", "1745613601.000000", user="UBOB0001"))
+        w2.write_index(plan_summary="to=@alice", search_query="to:@alice", cost={"api_calls": 7})
+
+        idx = read_index(out_dir)
+        assert idx["schema_version"] == 2
+        # Top-level reflects latest run (backward-compat)
+        assert idx["plan"] == "to=@alice"
+        assert idx["query"] == "to:@alice"
+        # Aggregate counts: created=1+1=2
+        assert idx["counts"]["created"] == 2
+        # Per-run records preserved
+        assert len(idx["runs"]) == 2
+        queries = [r["query"] for r in idx["runs"]]
+        assert queries == ["from:@alice", "to:@alice"]
+        # Each run keeps its own cost
+        assert idx["runs"][0]["cost"]["api_calls"] == 4
+        assert idx["runs"][1]["cost"]["api_calls"] == 7
+
+    def test_legacy_v1_index_migrates_on_next_run(self, out_dir: Path) -> None:
+        # Hand-craft a v1 single-run index, then run a v2 fetch into the same out.
+        legacy = {
+            "schema_version": 1,
+            "tool": "slackwright",
+            "plan": "from=@bob",
+            "query": "from:@bob",
+            "captured_at": "2024-12-31T00:00:00-08:00",
+            "last_updated": "2024-12-31T00:01:00-08:00",
+            "format": "archive",
+            "counts": {"created": 5, "updated": 0, "noop": 0, "by_month": {"2024-12": 5}},
+            "extra": {"search_stats": {"chunks_completed": ["2024-12-01..2024-12-31"]}},
+        }
+        (out_dir / "_index.yaml").write_text(yaml.safe_dump(legacy), encoding="utf-8")
+
+        w = ArchiveWriter(out_dir, sa_user_id="UALICE00", format="archive")
+        w.write_match(_match("CGENERAL", "1745613600.000000", user="UALICE00"))
+        w.write_index(plan_summary="from=@alice", search_query="from:@alice")
+
+        idx = read_index(out_dir)
+        assert idx["schema_version"] == 2
+        assert len(idx["runs"]) == 2
+        # Legacy run preserved as the first entry
+        assert idx["runs"][0]["query"] == "from:@bob"
+        assert idx["runs"][1]["query"] == "from:@alice"
+        # Aggregate sums legacy + new
+        assert idx["counts"]["created"] == 5 + 1
+
+    def test_resume_matches_by_query(self, out_dir: Path) -> None:
+        # Two runs: --from finishes its chunks, --to runs separately.
+        # Resuming --from should skip its chunks; resuming --to should
+        # not (those chunks were never run for --to).
+        w1 = ArchiveWriter(out_dir, sa_user_id="UALICE00", format="archive")
+        w1.write_match(_match("CGENERAL", "1745613600.000000"))
+        w1.write_index(
+            plan_summary="from=@alice",
+            search_query="from:@alice",
+            extra={"search_stats": {"chunks_completed": ["2026-04-01..2026-04-30"]}},
+        )
+        w2 = ArchiveWriter(out_dir, sa_user_id="UALICE00", format="archive")
+        w2.write_match(_match("CGENERAL", "1745613601.000000"))
+        w2.write_index(
+            plan_summary="to=@alice",
+            search_query="to:@alice",
+            extra={"search_stats": {"chunks_completed": ["2026-04-01..2026-04-30"]}},
+        )
+        # Resume against --from query: completed chunks visible
+        assert previously_completed_chunks(out_dir, query="from:@alice") == {
+            "2026-04-01..2026-04-30"
+        }
+        # Resume against an unrelated query: nothing to skip
+        assert previously_completed_chunks(out_dir, query="from:@nobody") == set()
+        # Without query arg: returns the latest run (existing behavior)
+        assert previously_completed_chunks(out_dir) == {"2026-04-01..2026-04-30"}

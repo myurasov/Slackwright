@@ -80,7 +80,6 @@ class TestFetch:
         assert ns.cmd == "fetch"
         assert ns.from_user is None
         assert ns.to_user is None
-        assert ns.headed is False
         assert ns.format == "archive"
         assert ns.out == "./slackwright-out"
         assert ns.with_files is False
@@ -121,14 +120,6 @@ class TestFetch:
         assert ns.max_results == 500
         assert ns.with_files is True
 
-    def test_headed_overrides_default(self, parser) -> None:
-        ns = parser.parse_args(["fetch", "--headed"])
-        assert ns.headed is True
-
-    def test_headless_explicit(self, parser) -> None:
-        ns = parser.parse_args(["fetch", "--headless"])
-        assert ns.headed is False
-
     def test_format_choices(self, parser) -> None:
         ns = parser.parse_args(["fetch", "--format", "jsonl"])
         assert ns.format == "jsonl"
@@ -136,6 +127,13 @@ class TestFetch:
     def test_format_invalid_rejected(self, parser) -> None:
         with pytest.raises(SystemExit):
             parser.parse_args(["fetch", "--format", "html"])
+
+    def test_involves_flag(self, parser) -> None:
+        ns = parser.parse_args(["fetch", "--involves", "me", "--days", "10"])
+        assert ns.involves == "me"
+        assert ns.from_user is None
+        assert ns.to_user is None
+        assert ns.with_user is None
 
     def test_dry_run(self, parser) -> None:
         ns = parser.parse_args(["fetch", "--dry-run", "--from", "alice"])

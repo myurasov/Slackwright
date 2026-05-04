@@ -352,7 +352,8 @@ class SearchRunner:
                     # handles the truncation warning post-loop.
                     pass
             self.stats.matches_total += len(matches)
-            yield from matches
+            for raw in matches:
+                yield from _expand_match(raw)
             full_page = len(matches) >= SEARCH_PER_PAGE
             if page >= page_count and not full_page:
                 break
@@ -402,3 +403,40 @@ class SearchRunner:
 
 class _ChunkTruncated(Exception):
     """Internal signal — a chunk hit the SEARCH_MAX_RESULTS cap."""
+
+
+def _expand_match(item: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """Normalise one ``search.modules.messages`` item into individual messages.
+
+    Slack's response groups results by channel: each item carries a
+    ``channel`` dict and a ``messages`` list of the actual hits. We fan
+    those out so the rest of the pipeline (dedup, writer) sees a flat
+    stream of message dicts shaped like classic ``search.messages``
+    matches: ``ts`` / ``user`` / ``text`` at the top level, plus a
+    ``channel`` dict copied from the envelope.
+
+    Items that already look flat (top-level ``ts``) pass through
+    unchanged so the function is safe against future shape changes.
+    """
+    if not isinstance(item, dict):
+        return
+    if item.get("ts"):
+        yield item
+        return
+    inner = item.get("messages")
+    if not isinstance(inner, list) or not inner:
+        # Unknown shape — let it through so downstream sees it (and the
+        # writer's drop warning fires loudly).
+        yield item
+        return
+    channel = item.get("channel")
+    team = item.get("team")
+    for m in inner:
+        if not isinstance(m, dict):
+            continue
+        out = dict(m)
+        if channel is not None and "channel" not in out:
+            out["channel"] = channel
+        if team and not out.get("team"):
+            out["team"] = team
+        yield out

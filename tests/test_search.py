@@ -261,6 +261,61 @@ class TestSearchRunnerSoftEmpty:
         assert out == []
 
 
+class TestSearchRunnerGroupedShape:
+    """Slack's ``search.modules.messages`` groups hits by channel:
+    ``{channel: {...}, messages: [{ts, user, text, ...}, ...]}``. The runner
+    must flatten those into individual messages so dedup keys and the
+    archive writer see a real ``ts`` and ``channel.id``.
+    """
+
+    def test_grouped_envelope_flattens(self, state_dir: Path, fake_client) -> None:
+        grouped = {
+            "iid": "outer-1",
+            "team": "TACME000",
+            "channel": {"id": "CGENERAL", "name": "general"},
+            "messages": [
+                {
+                    "ts": "1700000001.000100",
+                    "user": "UALICE00",
+                    "text": "first",
+                    "permalink": "https://acme.slack.com/archives/CGENERAL/p1",
+                },
+                {
+                    "ts": "1700000002.000100",
+                    "user": "UALICE00",
+                    "text": "second",
+                    "permalink": "https://acme.slack.com/archives/CGENERAL/p2",
+                },
+            ],
+        }
+        fake_client.register(
+            "search.modules.messages",
+            {"ok": True, "items": [grouped], "paging": {"total": 1, "pages": 1}},
+        )
+        runner = _make_runner(state_dir, fake_client)
+        out = runner.run(SearchPlan(from_user=_u("UALICE00", "alice")))
+        assert len(out) == 2
+        assert {m["ts"] for m in out} == {"1700000001.000100", "1700000002.000100"}
+        assert all(m["channel"]["id"] == "CGENERAL" for m in out)
+        assert runner.stats.matches_unique == 2
+
+    def test_flat_shape_passes_through(self, state_dir: Path, fake_client) -> None:
+        # Future-proofing: if Slack reverts to flat ``ts`` at the top
+        # level, the flatten helper must not double-wrap.
+        fake_client.register(
+            "search.modules.messages",
+            {
+                "ok": True,
+                "items": [_match("CGENERAL", "1700000003.000100")],
+                "paging": {"total": 1, "pages": 1},
+            },
+        )
+        runner = _make_runner(state_dir, fake_client)
+        out = runner.run(SearchPlan(from_user=_u("UALICE00", "alice")))
+        assert len(out) == 1
+        assert out[0]["ts"] == "1700000003.000100"
+
+
 # ---------------------------------------------------------------------------
 # chunk_label + skip_chunks (resume) + deadline (timeout)
 # ---------------------------------------------------------------------------

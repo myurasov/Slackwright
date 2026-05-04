@@ -23,7 +23,6 @@ Subcommands::
                        [--in CHANNEL]  [--query "..."]
                        [--days N | --since YYYY-MM-DD [--until YYYY-MM-DD]]
                        [--max N] [--out DIR] [--with-files]
-                       [--headless | --headed]
                        [--format {archive,jsonl,raw}]
                        [--explain | --dry-run | --resume | --stream-json]
                        [--timeout SECONDS]
@@ -185,10 +184,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default="auto",
         help="force interpretation as user or channel (default: auto-detect).",
     )
-    sp.add_argument(
-        "--headed", action="store_true", help="run resolver browser headed (default headless)."
-    )
-
     # --- fetch ---
     sp = sub.add_parser(
         "fetch",
@@ -240,6 +235,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="DMs/MPIMs with this user — same input flexibility as --from.",
     )
     sp.add_argument(
+        "--involves",
+        dest="involves",
+        help="shortcut for --from PERSON + --to PERSON unioned in one run "
+        "(messages this person sent or received). Conflicts with --from/--to/--with.",
+    )
+    sp.add_argument(
         "--in", dest="in_channel", help="restrict to a channel (name with or without #, or C-id)."
     )
     sp.add_argument(
@@ -266,26 +267,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--with-files", action="store_true", help="also download attached files into <out>/_files/."
     )
-    bg = sp.add_mutually_exclusive_group()
-    bg.add_argument(
-        "--headless", dest="headed", action="store_false", help="run browser headless (default)."
-    )
-    bg.add_argument(
-        "--headed",
-        dest="headed",
-        action="store_true",
-        help="run browser visible (useful for debugging, optional).",
-    )
-    sp.set_defaults(headed=False)
     sp.add_argument(
         "--format",
         choices=["archive", "jsonl", "raw"],
         default="archive",
         help="output format (default: archive).",
-    )
-    sp.add_argument(
-        "--executable-path",
-        help="path to a custom Chromium binary (default: Playwright's bundled Chromium).",
     )
     sp.add_argument("-v", "--verbose", action="store_true", help="extra logging on stderr.")
     sp.add_argument(
@@ -311,6 +297,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--timeout", type=int, default=None, help="abort the fetch after N seconds (best-effort)."
     )
+    sp.add_argument(
+        "--no-refresh",
+        dest="auto_refresh",
+        action="store_false",
+        help="don't auto-refresh the xoxc token via headless browser on invalid_auth.",
+    )
+    sp.set_defaults(auto_refresh=True)
 
     # --- describe-archive ---
     sp = sub.add_parser(
@@ -480,12 +473,11 @@ def _cmd_resolve(args: argparse.Namespace) -> Result:
     if isinstance(bundle, Result):
         return bundle
 
-    headed = bool(getattr(args, "headed", False))
     cost = CostTracker()
     try:
         with (
             StateLock(state_dir).acquire(timeout=60),
-            SlackWebClient.open(bundle, state_dir=state_dir, headed=headed, cost=cost) as client,
+            SlackWebClient.open(bundle, state_dir=state_dir, cost=cost) as client,
         ):
             resolver = EntityResolver(client, state_dir=state_dir)
             kind = args.kind
@@ -555,7 +547,7 @@ def _cmd_doctor(args: argparse.Namespace) -> Result:
         )
     cost = CostTracker()
     try:
-        with SlackWebClient.open(bundle, state_dir=state_dir, headed=False, cost=cost) as client:
+        with SlackWebClient.open(bundle, state_dir=state_dir, cost=cost) as client:
             r = client.health()
     except SlackWebError as e:
         cost.finalise()
@@ -635,8 +627,14 @@ def _cmd_report(args: argparse.Namespace) -> Result:
     if not out.exists():
         return Result.failure("report", ExitCode.IO, "io", f"path does not exist: {out}")
     target = Path(args.report_out).expanduser().resolve() if args.report_out else None
+    state_dir = resolve_state_dir(args.state_dir)
     try:
-        written = render_report(out, target=target, title=args.title)
+        written = render_report(
+            out,
+            target=target,
+            title=args.title,
+            state_dir=state_dir if state_dir.exists() else None,
+        )
     except FileNotFoundError as e:
         return Result.failure("report", ExitCode.IO, "io", str(e))
     return Result.success(
@@ -659,6 +657,15 @@ def _cmd_fetch(args: argparse.Namespace) -> Result:
     if args.days is not None and (args.since or args.until):
         return Result.failure(
             "fetch", ExitCode.USAGE, "usage", "--days is mutually exclusive with --since/--until"
+        )
+
+    if args.involves and (args.from_user or args.to_user or args.with_user):
+        return Result.failure(
+            "fetch",
+            ExitCode.USAGE,
+            "usage",
+            "--involves cannot be combined with --from/--to/--with — "
+            "it's a shortcut that runs both --from and --to internally.",
         )
 
     date_from: dt.date | None = None
@@ -689,81 +696,31 @@ def _cmd_fetch(args: argparse.Namespace) -> Result:
 
         deadline = _time.monotonic() + max(1, int(args.timeout))
 
+    # Build the list of from/to phases up-front; --involves expands to
+    # two, everything else is a single phase. Used by both the
+    # explain-only path and the live fetch.
+    phases: list[tuple[str | None, str | None]]
+    if args.involves:
+        phases = [(args.involves, None), (None, args.involves)]
+    else:
+        phases = [(args.from_user, args.to_user)]
+
     # ---- explain-only fast path: try cache-only resolution first; only
     # spin up Playwright if a name actually needs a network lookup.
     if explain_only:
-        try:
-            plan = _resolve_plan_explain(
-                args=args,
-                state_dir=state_dir,
-                bundle=bundle,
-                cost=cost,
-                date_from=date_from,
-                date_to=date_to,
-            )
-        except (LookupError, ValueError) as e:
-            cost.finalise()
-            return Result.failure(
-                "fetch",
-                ExitCode.RESOLUTION_FAILED,
-                "resolution_failed",
-                str(e),
-                data={"cost": cost.to_json()},
-            )
-        except SlackWebError as e:
-            cost.finalise()
-            return Result.failure(
-                "fetch",
-                _classify_slack_error(e),
-                e.error or "permanent_api",
-                f"Slack API error during resolve: {e}",
-                data={"cost": cost.to_json()},
-            )
-        plan_summary = plan.display()
-        rendered_query = build_query(plan)
-        chunks = _plan_chunks(plan)
-        if not args.json:
-            sys.stderr.write(f"[slackwright] plan: {plan_summary}\n")
-            sys.stderr.write(f"[slackwright] query: {rendered_query!r}\n")
-        cost.finalise()
-        return Result.success(
-            "fetch",
-            data={
-                "explained": True,
-                "plan": plan_summary,
-                "query": rendered_query,
-                "chunks": chunks,
-                "expected_chunk_count": len(chunks),
-                "cost": cost.to_json(),
-                "human": (
-                    f"plan:  {plan_summary}\n"
-                    f"query: {rendered_query}\n"
-                    f"chunks ({len(chunks)}):\n  " + "\n  ".join(c["label"] for c in chunks)
-                ),
-            },
-        )
-
-    try:
-        with SlackWebClient.open(
-            bundle,
-            state_dir=state_dir,
-            headed=args.headed,
-            cost=cost,
-            executable_path=args.executable_path,
-        ) as client:
-            resolver = EntityResolver(client, state_dir=state_dir)
+        explained: list[dict[str, Any]] = []
+        human_lines: list[str] = []
+        for phase_from, phase_to in phases:
             try:
-                plan = SearchPlan(
-                    from_user=resolver.resolve_user(args.from_user) if args.from_user else None,
-                    to_user=resolver.resolve_user(args.to_user) if args.to_user else None,
-                    with_user=resolver.resolve_user(args.with_user) if args.with_user else None,
-                    in_channel=resolver.resolve_channel(args.in_channel)
-                    if args.in_channel
-                    else None,
-                    extra_query=args.extra_query,
+                plan = _resolve_plan_explain(
+                    args=args,
+                    state_dir=state_dir,
+                    bundle=bundle,
+                    cost=cost,
                     date_from=date_from,
                     date_to=date_to,
-                    max_results=args.max_results,
+                    phase_from=phase_from,
+                    phase_to=phase_to,
                 )
             except (LookupError, ValueError) as e:
                 cost.finalise()
@@ -774,40 +731,133 @@ def _cmd_fetch(args: argparse.Namespace) -> Result:
                     str(e),
                     data={"cost": cost.to_json()},
                 )
-
+            except SlackWebError as e:
+                cost.finalise()
+                return Result.failure(
+                    "fetch",
+                    _classify_slack_error(e),
+                    e.error or "permanent_api",
+                    f"Slack API error during resolve: {e}",
+                    data={"cost": cost.to_json()},
+                )
             plan_summary = plan.display()
             rendered_query = build_query(plan)
-
+            chunks = _plan_chunks(plan)
             if not args.json:
                 sys.stderr.write(f"[slackwright] plan: {plan_summary}\n")
                 sys.stderr.write(f"[slackwright] query: {rendered_query!r}\n")
+            explained.append(
+                {
+                    "plan": plan_summary,
+                    "query": rendered_query,
+                    "chunks": chunks,
+                    "expected_chunk_count": len(chunks),
+                }
+            )
+            human_lines.append(
+                f"plan:  {plan_summary}\n"
+                f"query: {rendered_query}\n"
+                f"chunks ({len(chunks)}):\n  " + "\n  ".join(c["label"] for c in chunks)
+            )
+        cost.finalise()
+        # Single-phase callers see the legacy top-level shape; --involves
+        # surfaces a ``phases`` list. Both are exposed so JSON consumers
+        # can branch cleanly.
+        latest = explained[-1]
+        return Result.success(
+            "fetch",
+            data={
+                "explained": True,
+                "plan": latest["plan"],
+                "query": latest["query"],
+                "chunks": latest["chunks"],
+                "expected_chunk_count": latest["expected_chunk_count"],
+                "phases": explained if len(explained) > 1 else None,
+                "cost": cost.to_json(),
+                "human": "\n\n".join(human_lines),
+            },
+        )
 
-            skip_chunks: set[str] = set()
-            if args.resume:
-                skip_chunks = previously_completed_chunks(out)
-                if skip_chunks and not args.json:
-                    sys.stderr.write(
-                        f"[slackwright] resume: skipping "
-                        f"{len(skip_chunks)} previously-completed chunks under {out}\n"
-                    )
-
+    try:
+        with SlackWebClient.open(
+            bundle,
+            state_dir=state_dir,
+            cost=cost,
+            auto_refresh=args.auto_refresh,
+        ) as client:
+            resolver = EntityResolver(client, state_dir=state_dir)
             try:
                 with StateLock(state_dir).acquire(timeout=60):
-                    return _fetch_run(
-                        client=client,
-                        resolver=resolver,
-                        plan=plan,
-                        plan_summary=plan_summary,
-                        rendered_query=rendered_query,
-                        out=out,
-                        bundle=bundle,
-                        cost=cost,
-                        progress=progress,
-                        args=args,
-                        skip_chunks=skip_chunks,
-                        stream=stream,
-                        deadline=deadline,
-                    )
+                    phase_results: list[Result] = []
+                    for idx, (phase_from, phase_to) in enumerate(phases, start=1):
+                        if args.involves and not args.json:
+                            sys.stderr.write(
+                                f"[slackwright] --involves phase {idx}/{len(phases)} "
+                                f"({'from' if phase_from else 'to'}=@{args.involves})\n"
+                            )
+                        try:
+                            plan = SearchPlan(
+                                from_user=resolver.resolve_user(phase_from) if phase_from else None,
+                                to_user=resolver.resolve_user(phase_to) if phase_to else None,
+                                with_user=resolver.resolve_user(args.with_user)
+                                if args.with_user
+                                else None,
+                                in_channel=resolver.resolve_channel(args.in_channel)
+                                if args.in_channel
+                                else None,
+                                extra_query=args.extra_query,
+                                date_from=date_from,
+                                date_to=date_to,
+                                max_results=args.max_results,
+                            )
+                        except (LookupError, ValueError) as e:
+                            cost.finalise()
+                            return Result.failure(
+                                "fetch",
+                                ExitCode.RESOLUTION_FAILED,
+                                "resolution_failed",
+                                str(e),
+                                data={"cost": cost.to_json()},
+                            )
+
+                        plan_summary = plan.display()
+                        rendered_query = build_query(plan)
+
+                        if not args.json:
+                            sys.stderr.write(f"[slackwright] plan: {plan_summary}\n")
+                            sys.stderr.write(f"[slackwright] query: {rendered_query!r}\n")
+
+                        skip_chunks: set[str] = set()
+                        if args.resume:
+                            skip_chunks = previously_completed_chunks(out, query=rendered_query)
+                            if skip_chunks and not args.json:
+                                sys.stderr.write(
+                                    f"[slackwright] resume: skipping "
+                                    f"{len(skip_chunks)} previously-completed chunks under {out}\n"
+                                )
+
+                        result = _fetch_run(
+                            client=client,
+                            resolver=resolver,
+                            plan=plan,
+                            plan_summary=plan_summary,
+                            rendered_query=rendered_query,
+                            out=out,
+                            bundle=bundle,
+                            cost=cost,
+                            progress=progress,
+                            args=args,
+                            skip_chunks=skip_chunks,
+                            stream=stream,
+                            deadline=deadline,
+                        )
+                        phase_results.append(result)
+                        # Bail on the first failed phase so we don't pile
+                        # follow-up work on top of a half-broken run.
+                        if not result.ok:
+                            return result
+
+                    return _merge_phase_results(phase_results, involves=bool(args.involves))
             except LockTimeoutError as e:
                 cost.finalise()
                 return Result.failure("fetch", ExitCode.IO, "lock_timeout", str(e))
@@ -822,6 +872,50 @@ def _cmd_fetch(args: argparse.Namespace) -> Result:
         )
 
 
+def _merge_phase_results(results: list[Result], *, involves: bool) -> Result:
+    """Combine per-phase ``_fetch_run`` outcomes into a single ``Result``.
+
+    Single-phase callers see the original Result verbatim. ``--involves``
+    callers get the latest run's full ``data`` (which already reflects
+    the on-disk union — matches.jsonl is append-and-dedup, _index.yaml
+    accumulates runs[]) plus a top-level ``phases`` array with each
+    phase's plan/query/counts and a summed ``total_counts``.
+    """
+    if not results:
+        return Result.failure("fetch", ExitCode.IO, "io", "no fetch phases ran")
+    if not involves or len(results) == 1:
+        return results[-1]
+
+    latest = results[-1]
+    base = dict(latest.data or {})
+    phase_blobs: list[dict[str, Any]] = []
+    totals = {"created": 0, "updated": 0, "noop": 0, "dropped": 0}
+    for r in results:
+        d = r.data or {}
+        c = d.get("counts") or {}
+        for k in totals:
+            v = c.get(k)
+            if isinstance(v, int):
+                totals[k] += v
+        phase_blobs.append(
+            {
+                "plan": d.get("plan"),
+                "query": d.get("query"),
+                "counts": c,
+                "search_stats": d.get("search_stats"),
+            }
+        )
+
+    base["phases"] = phase_blobs
+    base["total_counts"] = totals
+    base["human"] = (
+        f"--involves: {len(results)} phases, "
+        f"total {totals['created']} new / {totals['updated']} updated "
+        f"messages\n" + (latest.data.get("human", "") if latest.data else "")
+    )
+    return Result.success("fetch", data=base)
+
+
 def _resolve_plan_explain(
     *,
     args: argparse.Namespace,
@@ -830,20 +924,29 @@ def _resolve_plan_explain(
     cost: CostTracker,
     date_from: dt.date | None,
     date_to: dt.date | None,
+    phase_from: str | None = None,
+    phase_to: str | None = None,
 ) -> SearchPlan:
     """Resolve --from / --to / --with / --in for the explain path.
 
-    First tries cache-only (no Playwright). If any name needs a network
-    call the resolver doesn't know about yet, opens a headless client to
-    finish the resolution. This keeps `--explain` zero-cost when every
-    referenced entity is already cached, and still correct otherwise.
+    First tries cache-only (no network). If any name needs a network
+    call the resolver doesn't know about yet, opens a live HTTP client
+    to finish the resolution. This keeps `--explain` zero-cost when
+    every referenced entity is already cached, and still correct
+    otherwise.
+
+    ``phase_from`` / ``phase_to`` override ``args.from_user`` /
+    ``args.to_user`` for ``--involves`` expansion (one explain per
+    phase). Default ``None`` means use the args verbatim.
     """
+    eff_from = phase_from if (phase_from is not None or phase_to is not None) else args.from_user
+    eff_to = phase_to if (phase_from is not None or phase_to is not None) else args.to_user
     cache_resolver = EntityResolver(client=None, state_dir=state_dir)
 
     def _try_resolve(cache_only: EntityResolver) -> SearchPlan:
         return SearchPlan(
-            from_user=cache_only.resolve_user(args.from_user) if args.from_user else None,
-            to_user=cache_only.resolve_user(args.to_user) if args.to_user else None,
+            from_user=cache_only.resolve_user(eff_from) if eff_from else None,
+            to_user=cache_only.resolve_user(eff_to) if eff_to else None,
             with_user=cache_only.resolve_user(args.with_user) if args.with_user else None,
             in_channel=cache_only.resolve_channel(args.in_channel) if args.in_channel else None,
             extra_query=args.extra_query,
@@ -863,7 +966,6 @@ def _resolve_plan_explain(
     with SlackWebClient.open(
         bundle,
         state_dir=state_dir,
-        headed=False,
         cost=cost,
     ) as client:
         live_resolver = EntityResolver(client, state_dir=state_dir)
@@ -1028,6 +1130,7 @@ def _finalise_run(
             "created": writer.stats.created,
             "updated": writer.stats.updated,
             "noop": writer.stats.noop,
+            "dropped": writer.stats.dropped,
             "users_written": users_written,
             "channels_written": channels_written,
         },
@@ -1036,8 +1139,9 @@ def _finalise_run(
         "cost": cost_block,
         "human": (
             f"wrote {writer.stats.created} new / {writer.stats.updated} updated "
-            f"messages to {out}\n"
-            f"  users:    {users_written}\n"
+            f"messages to {out}"
+            + (f" ({writer.stats.dropped} dropped)" if writer.stats.dropped else "")
+            + f"\n  users:    {users_written}\n"
             f"  channels: {channels_written}\n"
             f"  index:    {idx_path}"
         ),
