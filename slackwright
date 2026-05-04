@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# Copyright 2026 Mikhail Yurasov
+# Licensed under the Apache License, Version 2.0
+#
+# slackwright — single-entry helper for both the slackwright CLI and the
+# project's dev workflow. The first argument selects the mode:
+#
+#   ./slackwright install [--force]   # ensure venv + deps + Playwright Chromium
+#   ./slackwright test    [args...]   # run pytest (auto-installs first)
+#   ./slackwright lint    [args...]   # run ruff check (auto-installs first)
+#   ./slackwright fmt                 # run ruff check --fix (+ ruff format)
+#   ./slackwright shell               # drop into a venv-activated subshell
+#   ./slackwright clean               # remove .venv + lint/test caches
+#   ./slackwright help                # show this help text
+#
+# Anything else is forwarded to the slackwright Python CLI:
+#
+#   ./slackwright login --workspace https://acme.slack.com
+#   ./slackwright fetch --from me --days 7
+#   ./slackwright whoami
+#   ./slackwright resolve alice
+#   ./slackwright doctor
+#
+# Auto-install: every subcommand bootstraps the venv, dependencies, and
+# Playwright Chromium on first use. Subsequent runs skip the bootstrap
+# unless pyproject.toml is newer than the install stamp (or you pass
+# --force to install).
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$HERE"
+
+PYTHON_VERSION="${SLACKWRIGHT_PYTHON:-3.12}"
+VENV_DIR=".venv"
+INSTALL_STAMP="$VENV_DIR/.slackwright-installed"
+PW_BROWSER="${SLACKWRIGHT_PW_BROWSER:-chromium}"
+
+color() { printf "\033[%sm%s\033[0m" "$1" "$2"; }
+log()   { color "1;36" "[slackwright] "; echo "$@"; }
+warn()  { color "1;33" "[slackwright] "; echo "$@" >&2; }
+die()   { color "1;31" "[slackwright] "; echo "$@" >&2; exit 1; }
+
+require_uv() {
+  if ! command -v uv >/dev/null 2>&1; then
+    die "uv is required (https://docs.astral.sh/uv/). Install with:
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+or, on macOS, 'brew install uv'."
+  fi
+}
+
+ensure_venv() {
+  if [ ! -d "$VENV_DIR" ]; then
+    log "creating $VENV_DIR (Python $PYTHON_VERSION via uv)"
+    uv venv --python "$PYTHON_VERSION" "$VENV_DIR" >/dev/null
+  fi
+}
+
+ensure_deps() {
+  local force="${1:-}"
+  if [ "$force" = "--force" ] || \
+     [ ! -f "$INSTALL_STAMP" ] || \
+     [ "pyproject.toml" -nt "$INSTALL_STAMP" ]; then
+    log "syncing dependencies (uv pip install -e \".[dev]\")"
+    uv pip install -e ".[dev]" --quiet
+    touch "$INSTALL_STAMP"
+  fi
+}
+
+ensure_browser() {
+  # Playwright stores browsers under $PLAYWRIGHT_BROWSERS_PATH or its
+  # platform default. Cheapest reliable check: try to resolve the
+  # browser's executable_path through Python; non-zero exit means
+  # the binary is missing and we install it.
+  local force="${1:-}"
+  local pw="$VENV_DIR/bin/playwright"
+  [ -x "$pw" ] || die "playwright executable missing — re-run ./slackwright install"
+
+  if [ "$force" = "--force" ]; then
+    log "installing Playwright $PW_BROWSER (--force)"
+    "$pw" install "$PW_BROWSER"
+    return
+  fi
+
+  if ! "$VENV_DIR/bin/python" -c "
+import sys
+from playwright.sync_api import sync_playwright
+try:
+    with sync_playwright() as p:
+        getattr(p, '$PW_BROWSER').executable_path
+except Exception:
+    sys.exit(1)
+" >/dev/null 2>&1; then
+    log "installing Playwright $PW_BROWSER (one-time, ~150 MB)"
+    "$pw" install "$PW_BROWSER"
+  fi
+}
+
+bootstrap() {
+  local force="${1:-}"
+  require_uv
+  ensure_venv
+  ensure_deps "$force"
+  ensure_browser "$force"
+}
+
+show_help() {
+  # Print lines 5-24 of this script (the comment block above), stripping
+  # the leading '# ' so it reads as plain text.
+  sed -n '5,28p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+run_cli() {
+  bootstrap
+  # PYTHONPATH=src is the iCloud-sync workaround: macOS marks .pth
+  # files in iCloud-synced dirs as hidden, so editable installs don't
+  # auto-load. PYTHONPATH bypasses site.py entirely.
+  PYTHONPATH="$HERE/src" exec "$VENV_DIR/bin/python" -m slackwright "$@"
+}
+
+# No args → show help and the CLI's help in one go.
+if [ $# -eq 0 ]; then
+  show_help
+  echo
+  bootstrap
+  PYTHONPATH="$HERE/src" "$VENV_DIR/bin/python" -m slackwright --help
+  exit 0
+fi
+
+cmd="$1"
+
+# Reserved dev-workflow subcommands. Anything else is forwarded to the
+# slackwright Python CLI (login / fetch / whoami / resolve / doctor /
+# top-level flags like --version / --state-dir / --help).
+case "$cmd" in
+  install)
+    shift
+    bootstrap "${1:-}"
+    log "ready: $VENV_DIR + $PW_BROWSER + dependencies"
+    ;;
+  test|tests)
+    shift
+    bootstrap
+    PYTHONPATH="$HERE/src" exec "$VENV_DIR/bin/pytest" "$@"
+    ;;
+  lint)
+    shift
+    bootstrap
+    exec "$VENV_DIR/bin/ruff" check src/ tests/ "$@"
+    ;;
+  fmt|format)
+    shift
+    bootstrap
+    "$VENV_DIR/bin/ruff" check --fix src/ tests/
+    "$VENV_DIR/bin/ruff" format src/ tests/ 2>/dev/null || true
+    ;;
+  shell)
+    bootstrap
+    log "entering venv-activated subshell — type 'exit' to leave"
+    exec "${SHELL:-/bin/bash}" -i -c "
+      source '$VENV_DIR/bin/activate'
+      export PYTHONPATH='$HERE/src'
+      exec '${SHELL:-/bin/bash}' -i
+    "
+    ;;
+  clean)
+    log "removing $VENV_DIR, .pytest_cache, .ruff_cache, **/__pycache__"
+    rm -rf "$VENV_DIR" .pytest_cache .ruff_cache
+    find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+    ;;
+  help|-h|--help)
+    show_help
+    ;;
+  *)
+    # Forward everything else to the slackwright Python CLI.
+    run_cli "$@"
+    ;;
+esac

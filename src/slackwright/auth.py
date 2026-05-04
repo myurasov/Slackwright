@@ -1,0 +1,347 @@
+# Copyright 2026 Mikhail Yurasov
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
+"""Login flow + Slack web-app token extraction.
+
+The login flow opens a real Chromium window pointed at the user's workspace
+and waits for the user to complete whatever auth journey their org requires
+(SSO, MFA, etc.). Once the Slack web client is loaded, we extract:
+
+  - the **xoxc** API token (from ``boot_data.api_token`` injected by the
+    Slack web client into ``window``)
+  - the **d** cookie (the long-lived auth cookie set on ``.slack.com``)
+  - the **team** / **enterprise** metadata (``boot_data.team_id``,
+    ``boot_data.enterprise_id``, etc.)
+  - the **logged-in user**'s id, real name and email
+
+These are the same credentials the Slack desktop client uses, so any API
+endpoint reachable from the web client (search, conversations.history,
+users.list, files.info, ...) is reachable here.
+
+Storage:
+  - Playwright storage state goes to ``<state-dir>/playwright-state.json``
+  - The extracted token bundle goes to ``<state-dir>/auth.json``
+
+Both files contain credentials. Treat them as you would an SSH key: don't
+commit them, don't share them. The default state dir
+(``~/.cache/slackwright/``) is mode 0700; the auth files inside are 0600.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import dataclasses
+import json
+import os
+import re
+import sys
+import time
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+_DEFAULT_LOGIN_TIMEOUT_S = 300
+_BOOT_DATA_POLL_INTERVAL_S = 1.0
+
+
+@dataclasses.dataclass
+class AuthBundle:
+    """Everything we extracted from a logged-in Slack web session.
+
+    Persisted to ``<state-dir>/auth.json``. ``storage_state_path`` points at
+    the sibling file Playwright wrote with cookies + localStorage; reload
+    them together via ``load_auth(state_dir)``.
+    """
+
+    workspace_url: str           # e.g. https://acme.enterprise.slack.com
+    api_url: str                 # e.g. https://acme.enterprise.slack.com/api
+    api_token: str               # xoxc-...
+    team_id: str | None
+    enterprise_id: str | None
+    user_id: str
+    user_name: str | None        # Slack handle (boot_data.username)
+    user_real_name: str | None
+    user_email: str | None
+    extracted_at: float
+    storage_state_path: str
+
+    def to_json(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_json(cls, d: dict[str, Any]) -> AuthBundle:
+        return cls(**d)
+
+
+def workspace_to_api_url(workspace_url: str) -> str:
+    """``https://acme.slack.com`` -> ``https://acme.slack.com/api``."""
+    p = urlparse(workspace_url)
+    if not p.scheme or not p.netloc:
+        raise ValueError(f"workspace URL must include scheme and host: {workspace_url!r}")
+    return f"{p.scheme}://{p.netloc}/api"
+
+
+def normalize_workspace_url(value: str) -> str:
+    """Accept ``acme``, ``acme.slack.com``, or a full URL; return canonical URL.
+
+    A bare token is treated as the workspace short-name (``<name>.slack.com``).
+    Enterprise Grid users are expected to pass the full URL because both
+    ``acme.enterprise.slack.com`` and ``acme.slack.com`` exist for many orgs.
+    """
+    v = value.strip()
+    if v.startswith(("http://", "https://")):
+        return v.rstrip("/")
+    if "." in v:
+        return f"https://{v.rstrip('/')}"
+    return f"https://{v}.slack.com"
+
+
+# ---------------------------------------------------------------------------
+# JS snippets — kept as constants so we can unit-test the parsing
+# ---------------------------------------------------------------------------
+
+
+# Slack moved its boot data twice in the last few years. We probe the modern
+# location first, fall back to the legacy ones, and scrape ``localConfig_v2``
+# from localStorage as a last resort. Returns null if nothing matches.
+EXTRACT_BOOT_DATA_JS = r"""
+() => {
+  const out = {};
+  const bd = (window).boot_data;
+  if (bd) {
+    out.api_token = bd.api_token || null;
+    out.team_id = bd.team_id || (bd.team && bd.team.id) || null;
+    out.team_url = bd.team_url || (bd.team && bd.team.url) || null;
+    out.team_name = bd.team_name || (bd.team && bd.team.name) || null;
+    out.enterprise_id = bd.enterprise_id || (bd.enterprise && bd.enterprise.id) || null;
+    out.user_id = bd.user_id || bd.user || null;
+    out.username = bd.username || bd.user_name || null;
+    out.real_name = bd.real_name || null;
+    out.email = bd.email || null;
+    if (out.api_token) return out;
+  }
+
+  try {
+    const raw = localStorage.getItem("localConfig_v2");
+    if (raw) {
+      const cfg = JSON.parse(raw);
+      const teams = cfg.teams || {};
+      const ids = Object.keys(teams);
+      if (ids.length) {
+        const t = teams[ids[0]];
+        out.api_token = t.token || null;
+        out.team_id = t.id || ids[0];
+        out.team_url = t.url || null;
+        out.team_name = t.name || null;
+        out.user_id = t.user_id || null;
+        out.username = t.name || null;
+        if (out.api_token) return out;
+      }
+    }
+  } catch (e) {}
+
+  return null;
+}
+"""
+
+
+# ---------------------------------------------------------------------------
+# Login session
+# ---------------------------------------------------------------------------
+
+
+class LoginSession:
+    """One-shot login orchestration.
+
+    Usage:
+
+        with LoginSession(workspace_url="https://acme.slack.com",
+                          state_dir=Path("~/.cache/slackwright")) as s:
+            s.run_interactive(timeout_s=600)
+            bundle = s.bundle  # AuthBundle on success
+
+    All Playwright imports happen lazily inside ``__enter__`` so that
+    importing :mod:`slackwright.auth` is cheap (and so we can unit-test the
+    helpers without a Playwright install).
+    """
+
+    def __init__(
+        self,
+        *,
+        workspace_url: str,
+        state_dir: Path,
+        executable_path: str | None = None,
+    ) -> None:
+        self.workspace_url = normalize_workspace_url(workspace_url)
+        self.api_url = workspace_to_api_url(self.workspace_url)
+        self.state_dir = Path(state_dir)
+        self.executable_path = executable_path
+        self._playwright = None
+        self._browser = None
+        self._context = None
+        self.bundle: AuthBundle | None = None
+
+    # --- lifecycle ---
+
+    def __enter__(self) -> LoginSession:
+        from playwright.sync_api import sync_playwright
+
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self._playwright = sync_playwright().start()
+        launch_kwargs: dict[str, Any] = {"headless": False}
+        if self.executable_path:
+            launch_kwargs["executable_path"] = self.executable_path
+        self._browser = self._playwright.chromium.launch(**launch_kwargs)
+        # Use a fresh context — the user is logging in, so we explicitly
+        # start clean rather than re-loading whatever was on disk.
+        self._context = self._browser.new_context(viewport={"width": 1280, "height": 900})
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        try:
+            if self._context is not None:
+                self._context.close()
+            if self._browser is not None:
+                self._browser.close()
+        finally:
+            if self._playwright is not None:
+                self._playwright.stop()
+
+    # --- main flow ---
+
+    def run_interactive(self, *, timeout_s: int = _DEFAULT_LOGIN_TIMEOUT_S) -> AuthBundle:
+        """Open a window at the workspace URL, poll until ``boot_data`` shows up.
+
+        Most workspaces follow this flow:
+
+          1. Slack login screen → email or SSO
+          2. SSO redirect (Okta / Azure / ...) and back
+          3. Workspace lands at ``<workspace>/messages/...`` and the web
+             client initialises ``window.boot_data``
+
+        We just keep polling ``boot_data`` until it has an ``api_token``
+        (or the user gives up and we time out).
+        """
+        if self._context is None:
+            raise RuntimeError("LoginSession must be used as a context manager")
+        page = self._context.new_page()
+        page.goto(self.workspace_url, wait_until="domcontentloaded", timeout=120_000)
+        sys.stderr.write(
+            f"[slackwright] login: window opened at {self.workspace_url}\n"
+            f"  Complete the login flow in the browser. We'll detect the\n"
+            f"  authenticated session automatically (timeout {timeout_s}s).\n"
+        )
+        deadline = time.time() + timeout_s
+        last_url = ""
+        while time.time() < deadline:
+            try:
+                cur = page.url
+                if cur != last_url:
+                    sys.stderr.write(f"  [slackwright] page: {cur}\n")
+                    last_url = cur
+                data = page.evaluate(EXTRACT_BOOT_DATA_JS)
+            except Exception:
+                data = None
+            if data and data.get("api_token"):
+                bundle = self._materialize_bundle(data)
+                self.bundle = bundle
+                save_auth(self.state_dir, bundle, context=self._context)
+                sys.stderr.write(
+                    f"  [slackwright] login: success "
+                    f"(user={bundle.user_name or bundle.user_id}, "
+                    f"team={bundle.team_id})\n"
+                )
+                return bundle
+            time.sleep(_BOOT_DATA_POLL_INTERVAL_S)
+        raise TimeoutError(
+            f"slackwright login timed out after {timeout_s}s — no api_token found. "
+            f"Re-run `slackwright login` and complete the flow within the timeout."
+        )
+
+    def _materialize_bundle(self, data: dict[str, Any]) -> AuthBundle:
+        from .paths import storage_state_path
+
+        return AuthBundle(
+            workspace_url=self.workspace_url,
+            api_url=self.api_url,
+            api_token=data["api_token"],
+            team_id=data.get("team_id"),
+            enterprise_id=data.get("enterprise_id"),
+            user_id=data.get("user_id") or "",
+            user_name=data.get("username"),
+            user_real_name=data.get("real_name"),
+            user_email=data.get("email"),
+            extracted_at=time.time(),
+            storage_state_path=str(storage_state_path(self.state_dir)),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Persistence
+# ---------------------------------------------------------------------------
+
+
+def save_auth(state_dir: Path, bundle: AuthBundle, *, context: Any | None = None) -> None:
+    """Persist the auth bundle and (if we have a Playwright context) its
+    storage state. Both files are chmod-600 to keep the bearer-equivalent
+    credentials out of casual reach."""
+    from .paths import auth_path, storage_state_path
+
+    state_dir.mkdir(parents=True, exist_ok=True)
+    if context is not None:
+        try:
+            context.storage_state(path=str(storage_state_path(state_dir)))
+            os.chmod(storage_state_path(state_dir), 0o600)
+        except Exception as e:
+            sys.stderr.write(
+                f"[slackwright] warning: failed to persist Playwright storage "
+                f"state ({e}). Subsequent fetches will need to re-login.\n"
+            )
+    p = auth_path(state_dir)
+    p.write_text(json.dumps(bundle.to_json(), indent=2, sort_keys=True))
+    with contextlib.suppress(OSError):
+        os.chmod(p, 0o600)
+
+
+def load_auth(state_dir: Path) -> AuthBundle:
+    """Load the persisted auth bundle, raising :class:`FileNotFoundError`
+    with a friendly message when nothing has been logged in yet."""
+    from .paths import auth_path
+
+    p = auth_path(state_dir)
+    if not p.exists():
+        raise FileNotFoundError(
+            f"no slackwright login found at {p}. "
+            f"Run `slackwright login --workspace https://<your-workspace>.slack.com` first."
+        )
+    return AuthBundle.from_json(json.loads(p.read_text()))
+
+
+def has_storage_state(state_dir: Path) -> bool:
+    from .paths import storage_state_path
+
+    return storage_state_path(state_dir).exists()
+
+
+# ---------------------------------------------------------------------------
+# Validation helpers (small, pure — covered by unit tests)
+# ---------------------------------------------------------------------------
+
+
+_XOXC_RE = re.compile(r"^xox[cspbarpe]-")
+
+
+def is_plausible_api_token(token: str) -> bool:
+    """Sanity-check: real Slack web tokens start with ``xox<letter>-``."""
+    return bool(token) and bool(_XOXC_RE.match(token))
