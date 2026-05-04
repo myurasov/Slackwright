@@ -121,3 +121,22 @@ when the maintainer adds or removes items here.)
 - Prefer single-entry helper scripts (`./slackwright`) that handle
   both dev workflow and CLI forwarding, over separate `./dev` +
   `./slackwright` binaries. (May 2026)
+- Every CLI subcommand returns a `Result` (see
+  `slackwright.result.Result`); `main()` renders it as JSON when
+  `--json` is set, human text otherwise. Don't print directly to
+  stdout from a handler — populate `data.human` and let the renderer
+  decide. (May 2026)
+- Exit codes are an enum, not magic ints. New failure modes get a new
+  `ExitCode` member with a documented remediation; the table is
+  surfaced via `slackwright --schema` so agents can rely on it. (May
+  2026)
+- Cost / observability lives on `SlackWebClient.cost`. Anything that
+  hits the network in a new code path must increment the right counter
+  (api_calls, retries, rate_limited_seconds, ...) so the manifest's
+  `cost` block stays honest. (May 2026)
+- The on-disk archive layout (sharded `messages/YYYY/MM/DD/...json`,
+  `_users/`, `_channels/`, `_index.yaml`, `matches.jsonl`,
+  `_files/<F_id>/...`) is a public contract. The HTML report renderer
+  in `report.py` is the canonical reader of that layout — when you
+  change the schema, update the renderer and bump `archive_schema` in
+  `archive.py`. (May 2026)

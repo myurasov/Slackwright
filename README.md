@@ -86,6 +86,72 @@ installed via pip):
 Run `./slackwright --help` and `./slackwright <subcmd> --help` for the
 full flag list.
 
+## Agent-friendly mode
+
+Every command supports `--json` to emit a single JSON envelope on stdout
+suitable for parsing by an AI agent or wrapper script. Combined with
+`-q` / `--quiet` you get pure structured output:
+
+```bash
+./slackwright --json fetch --from me --days 14
+./slackwright --json whoami
+./slackwright --json doctor
+./slackwright --json -q fetch --from me --days 7 --explain   # plan only, no fetch
+```
+
+The envelope shape (stable contract) is:
+
+```json
+{
+  "ok": true,
+  "command": "fetch",
+  "exit_code": 0,
+  "exit_code_name": "ok",
+  "data": { "...": "subcommand-specific payload" }
+}
+```
+
+On failure, the envelope adds `error` (stable snake_case code), `message`
+(human-readable), and `remediation` (recommended next step), and the
+process exits with the documented exit code:
+
+| code | name                | when                                    |
+|------|---------------------|-----------------------------------------|
+| 0    | ok                  | success                                  |
+| 2    | usage               | bad CLI invocation                       |
+| 3    | no_login            | no persisted login at the state dir      |
+| 4    | resolution_failed   | --from / --to / --in didn't resolve      |
+| 5    | transient_api       | retryable Slack error (rate-limit, 5xx)  |
+| 6    | permanent_api       | non-retryable Slack error                |
+| 7    | io                  | local filesystem error                   |
+| 130  | interrupted         | SIGINT / Ctrl-C                          |
+
+Discover the full machine-readable CLI surface with:
+
+```bash
+./slackwright --schema                   # JSON: every subcommand, every flag, every exit code
+./slackwright fetch --explain --json     # the search query + chunk schedule, no fetch
+./slackwright fetch --stream-json ...    # JSON-per-line stream as matches arrive
+./slackwright describe-archive ./out     # introspect an existing archive
+./slackwright report ./out               # generate a self-contained HTML report
+```
+
+## HTML report
+
+`./slackwright report ./out` produces a self-contained
+`./out/report.html` (no external assets, no JavaScript) that you can
+email, attach to a ticket, or open with `file://`. It includes:
+
+- the run plan, query, captured-at timestamp, and cost block
+- summary stats + a per-month bar chart + by-channel-type breakdown
+- a per-channel section listing every message in chronological order
+- thread grouping (replies indented under the parent ts)
+- inline reactions, file attachment links (relative to `./out/_files/`)
+- resolved sender names + emails when the user cache has them
+
+Pass `--out path/to/report.html` to write somewhere other than the
+default; pass `--title "Q2 sweep"` to override the auto-generated title.
+
 ## Person and channel arguments
 
 Every `--from`, `--to`, `--with` and `--in` argument accepts whatever
@@ -154,6 +220,74 @@ Other formats:
 - `--format raw` — raw Slack response objects under `_raw/`, no
   post-processing. Useful for forensic inspection of the API.
 
+## Resumable + bounded fetches
+
+For long fetches, two flags help:
+
+```bash
+./slackwright fetch --since 2025-01-01 --resume --out ./big-archive
+./slackwright fetch --from me --days 365 --timeout 600 --out ./year
+```
+
+`--resume` reads the destination's `_index.yaml` and skips chunks that
+the prior run finished cleanly (recorded under
+`extra.search_stats.chunks_completed`). `--timeout SECONDS` aborts the
+fetch after the configured window and returns an exit code of `5`
+(transient_api) — the partial output is still on disk and can be
+resumed with another invocation.
+
+## Non-interactive login
+
+For CI / unattended agents that already hold valid Slack web
+credentials (e.g. extracted from a previous interactive session on a
+sibling machine, or pulled from a password manager / secret store):
+
+```bash
+./slackwright login \
+    --workspace https://acme.slack.com \
+    --token xoxc-... \
+    --cookie-d xoxd-... \
+    --user-id UALICE00 \
+    --user-email alice@example.com \
+    --team-id T12345
+```
+
+Both `--token` (the xoxc-... web token from `boot_data.api_token`) and
+`--cookie-d` (the xoxd-... `d` cookie from `.slack.com`) must be
+supplied together. `--user-id` / `--user-email` / `--team-id` are
+optional metadata for the persisted bundle. The headed flow is still
+the recommended path for interactive users.
+
+## Embedding via the Python API
+
+If you're running inside a Python process (LangChain, dspy, custom
+orchestrator, ...) you can skip the subprocess + JSON-parse round-trip
+and use the stable Python API directly:
+
+```python
+from slackwright import (
+    SlackWebClient, EntityResolver, SearchPlan, SearchRunner,
+    ArchiveWriter, CostTracker, load_auth, days_back,
+)
+from slackwright.paths import resolve_state_dir
+
+state_dir = resolve_state_dir()
+bundle = load_auth(state_dir)
+cost = CostTracker()
+with SlackWebClient.open(bundle, state_dir=state_dir, headed=False, cost=cost) as client:
+    resolver = EntityResolver(client, state_dir=state_dir)
+    plan = SearchPlan(from_user=resolver.resolve_user("me"),
+                      date_from=days_back(7))
+    runner = SearchRunner(client, resolver)
+    for msg in runner.iter_matches(plan):
+        ...   # do something with each match
+print(cost.to_json())
+```
+
+Everything imported from `slackwright.<module>` and re-exported via
+`slackwright.__all__` is part of the stable public surface. See
+[`examples/`](examples/) for runnable end-to-end snippets.
+
 ## Headless vs headed
 
 By default `slackwright fetch` runs Chromium **headless** — the browser
@@ -173,6 +307,9 @@ slackwright whoami            # show the logged-in user info (sanity check)
 slackwright doctor            # call auth.test against the saved session
 slackwright resolve alice     # show what an arg resolves to (debugging)
 slackwright resolve '#general' --kind channel
+slackwright describe-archive ./out   # JSON snapshot of a prior fetch
+slackwright report ./out             # render a self-contained HTML report
+slackwright --schema                 # JSON schema of every subcommand + flag
 ```
 
 ## Privacy and data location

@@ -2,7 +2,7 @@
 slackwright — specification (canonical reference for AI dev agents)
 ================================================================================
 
-Version: 0.1.0
+Version: 0.2.0
 Status:  alpha
 License: Apache 2.0
 Source:  https://github.com/myurasov/Slackwright
@@ -73,18 +73,24 @@ modules are intentionally thin and orthogonal so they can be unit-
 tested in isolation.
 
   src/slackwright/
-    __init__.py     public surface + version
+    __init__.py     public surface + version + __all__
     __main__.py     enables `python -m slackwright`
     paths.py        state-dir resolution (~/.cache/slackwright/ default)
-    auth.py         headed Playwright login + token / cookie extraction
+    auth.py         headed login + non-interactive login + token persistence
     client.py       Slack web-API client (over Playwright page.request)
+    cost.py         CostTracker (api calls, bytes, retries, rate-limit time)
+    lock.py         StateLock (cross-process flock on the state dir)
     resolver.py     id / email / handle / name -> Slack entity resolution
-    search.py       SearchPlan + paginated runner + month chunker
+    search.py       SearchPlan + paginated runner + month chunker + timeout
     files.py        attachment downloader
-    archive.py      sharded JSON tree + YAML caches + matches.jsonl
-    progress.py     stderr progress display
+    archive.py      sharded JSON tree + YAML caches + matches.jsonl + read_index
+    report.py       self-contained HTML report renderer
+    schema.py       JSON schema of the CLI tree (--schema)
+    result.py       Result + ExitCode + structured-error envelope
+    progress.py     stderr progress display (--quiet aware)
     cli.py          argparse entry-point dispatching to the modules above
 
+  examples/         runnable Python embedding snippets
   tests/            pytest suite — see section 11
 
 DEPENDENCIES
@@ -193,24 +199,46 @@ IDEMPOTENCY:
 5. CLI SURFACE
 --------------------------------------------------------------------------------
 
-  slackwright [--state-dir DIR] <subcommand> ...
+  slackwright [--state-dir DIR] [--json] [-q/--quiet] <subcommand> ...
+  slackwright --schema             # JSON schema of every subcommand + flag
+  slackwright --version            # print version and exit
 
 GLOBAL OPTIONS
-  --state-dir   override ~/.cache/slackwright/ (or $SLACKWRIGHT_STATE_DIR)
-  --version     print version and exit
+  --state-dir DIR   override ~/.cache/slackwright/ (or $SLACKWRIGHT_STATE_DIR)
+  --json            emit one JSON Result document on stdout (machine mode)
+  -q, --quiet       suppress stderr progress (the JSON envelope is unaffected)
+  --schema          print the machine-readable CLI schema, then exit
+  --version         print version, then exit
+
+JSON ENVELOPE (--json mode)
+  Always exactly one JSON document on stdout, never split across lines.
+  Top-level keys:
+    ok               bool                 — true when exit_code == 0
+    command          str                  — subcommand name
+    exit_code        int                  — see ExitCode (section 5.1)
+    exit_code_name   str                  — lowercase enum name
+    error            str (failure only)   — stable snake_case code
+    message          str (failure only)   — human-readable detail
+    remediation      str (failure only)   — recommended next action
+    data             dict                 — subcommand-specific payload
 
 SUBCOMMANDS
 
   login --workspace URL [--timeout SECONDS] [--executable-path PATH]
-    Open a headed browser at the workspace, wait for the user to log in,
-    then persist the session. Always headed.
+        [--token xoxc-... --cookie-d xoxd-...]
+        [--user-id ID --user-email E --team-id T]
+    Headed mode (default): open a real browser at the workspace URL and
+    wait for window.boot_data.api_token to appear.
+    Non-interactive mode: --token and --cookie-d together skip the
+    headed flow and persist a pre-extracted session. The optional
+    --user-id / --user-email / --team-id flags annotate the auth bundle.
 
   whoami
     Print the saved login bundle (with redacted token).
 
   doctor
     Probe auth.test against the saved session; print user + team on
-    success.
+    success. Carries a `cost` block.
 
   resolve <value> [--kind {auto,user,channel}] [--headed]
     Show what an arg resolves to (debugging). Auto detects user vs
@@ -222,9 +250,32 @@ SUBCOMMANDS
         [--max N] [--out DIR] [--with-files]
         [--headless | --headed]
         [--format {archive,jsonl,raw}]
-        [--executable-path PATH] [--dry-run] [-v]
+        [--explain] [--dry-run] [--resume] [--stream-json]
+        [--timeout SECONDS] [--executable-path PATH] [-v]
     The core extraction subcommand. Defaults: headless, format=archive,
     out=./slackwright-out, no max.
+
+    --explain      Resolve filters from cache (no Playwright spawn when
+                   possible) + emit the rendered query and chunk
+                   schedule as JSON. Doesn't write anything.
+    --dry-run      Alias for --explain, kept for backward compat.
+    --resume       Read --out's _index.yaml and skip chunks that the
+                   prior run finished cleanly (recorded under
+                   extra.search_stats.chunks_completed).
+    --stream-json  Emit one JSON match per line on stdout as matches
+                   arrive. Mutually-exclusive in spirit with --json
+                   (which emits one envelope at end).
+    --timeout N    Abort after N seconds; partial output stays on disk
+                   and is resumable. Returns ExitCode.TRANSIENT_API.
+
+  describe-archive <path>
+    Read an existing slackwright output dir and emit its _index.yaml +
+    on-disk file counts as JSON. Read-only, no network.
+
+  report <path> [--out FILE] [--title TITLE]
+    Render a self-contained report.html for a slackwright output dir.
+    Inline CSS, no external assets, no JavaScript. Defaults to writing
+    to <path>/report.html.
 
 PERSON ARGS (--from / --to / --with) accept any of:
   * U-id (used as-is)
@@ -236,6 +287,25 @@ PERSON ARGS (--from / --to / --with) accept any of:
 CHANNEL ARGS (--in) accept:
   * channel name (with or without leading #)
   * C-id / D-id / G-id (used as-is)
+
+
+--------------------------------------------------------------------------------
+5.1 EXIT CODES (stable contract)
+--------------------------------------------------------------------------------
+
+  0    ok                  success
+  2    usage               bad CLI invocation
+  3    no_login            no persisted login at the state dir
+  4    resolution_failed   --from / --to / --in didn't resolve
+  5    transient_api       retryable Slack error or fetch timeout
+  6    permanent_api       non-retryable Slack error
+  7    io                  local filesystem error / lock timeout
+  130  interrupted         SIGINT / Ctrl-C
+
+Numeric values are stable across versions. Symbolic names live in
+:class:`slackwright.result.ExitCode`. Tests compare to the enum, not
+the literal int. The full table (with remediation hints) is reachable
+via ``slackwright --schema``.
 
 
 --------------------------------------------------------------------------------
@@ -419,13 +489,18 @@ ADDING TESTS
 13. FUTURE WORK (rough buckets — refine before picking up)
 --------------------------------------------------------------------------------
 
-* Resume / incremental sync (track last_seen per channel, fetch only
-  what's new on subsequent runs).
+* MCP server (`slackwright mcp serve`) — expose every subcommand as an
+  MCP tool with a schema so MCP-speaking agents can call slackwright
+  directly without subprocess overhead.
+* Idempotency keys (--run-id <uuid>) so agents can correlate retries.
+* Per-channel last_seen incremental sync (today's --resume is at chunk
+  granularity, not per-channel).
 * Thread expansion (search returns the matching message; an opt-in
   --thread-replies flag would call conversations.replies for each).
 * Multi-workspace support in one state dir (currently one login
   -> one workspace).
-* Export adapters (e.g. ndjson stream to stdout, parquet writer).
+* Export adapters (e.g. ndjson stream to stdout, parquet writer,
+  parquet reader for the report renderer).
 * Windows + Linux smoke-test in CI (currently macOS-only validated).
 * PyPI release (set up GitHub Actions + trusted publishing).
 ================================================================================
