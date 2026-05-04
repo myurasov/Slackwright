@@ -56,16 +56,32 @@ ensure_venv() {
   fi
 }
 
+sync_deps() {
+  log "syncing dependencies (uv pip install -e \".[dev]\")"
+  if uv pip install -e ".[dev]" --quiet; then
+    touch "$INSTALL_STAMP"
+    return
+  fi
+
+  warn "dependency sync failed; recreating $VENV_DIR and retrying"
+  rm -rf "$VENV_DIR"
+  ensure_venv
+  uv pip install -e ".[dev]" --quiet
+  touch "$INSTALL_STAMP"
+}
+
 ensure_deps() {
   local force="${1:-}"
   if [ "$force" = "--force" ] || \
      [ ! -f "$INSTALL_STAMP" ] || \
-     [ "pyproject.toml" -nt "$INSTALL_STAMP" ]; then
-    log "syncing dependencies (uv pip install -e \".[dev]\")"
-    uv pip install -e ".[dev]" --quiet
-    touch "$INSTALL_STAMP"
+     [ "pyproject.toml" -nt "$INSTALL_STAMP" ] || \
+     [ ! -x "$VENV_DIR/bin/playwright" ] || \
+     [ ! -x "$VENV_DIR/bin/pytest" ] || \
+     [ ! -x "$VENV_DIR/bin/ruff" ]; then
+    sync_deps
   fi
 }
+
 
 ensure_browser() {
   # Playwright stores browsers under $PLAYWRIGHT_BROWSERS_PATH or its

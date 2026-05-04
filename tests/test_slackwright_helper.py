@@ -127,6 +127,107 @@ def _run_ensure_browser(
     )
 
 
+def _run_ensure_deps(
+    *,
+    tmp_path: Path,
+    venv: Path,
+    install_stamp: Path,
+    uv_log: Path,
+    fail_first: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is required to test the slackwright helper script")
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "uv",
+        """#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_UV_LOG}"
+if [ "$1" = "venv" ]; then
+  target="${@: -1}"
+  mkdir -p "$target/bin"
+  exit 0
+fi
+if [ "${FAKE_UV_FAIL_FIRST:-}" = "1" ] && [ ! -f "${FAKE_UV_LOG}.failed" ]; then
+  touch "${FAKE_UV_LOG}.failed"
+  exit 1
+fi
+""",
+    )
+    command = "\n".join(
+        [
+            "set -euo pipefail",
+            f"source {shlex.quote(str(HELPER))}",
+            f"VENV_DIR={shlex.quote(str(venv))}",
+            f"INSTALL_STAMP={shlex.quote(str(install_stamp))}",
+            "ensure_deps",
+        ]
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "FAKE_UV_FAIL_FIRST": "1" if fail_first else "0",
+            "FAKE_UV_LOG": str(uv_log),
+            "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
+        }
+    )
+    return subprocess.run(
+        [bash, "-c", command],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_ensure_deps_resyncs_when_install_stamp_is_stale(tmp_path: Path) -> None:
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents=True)
+    install_stamp = venv / ".slackwright-installed"
+    install_stamp.touch()
+    uv_log = tmp_path / "uv.log"
+
+    result = _run_ensure_deps(
+        tmp_path=tmp_path,
+        venv=venv,
+        install_stamp=install_stamp,
+        uv_log=uv_log,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert uv_log.read_text() == "pip install -e .[dev] --quiet\n"
+
+
+def test_ensure_deps_recreates_venv_when_sync_fails(tmp_path: Path) -> None:
+    venv = tmp_path / "venv"
+    bin_dir = venv / "bin"
+    bin_dir.mkdir(parents=True)
+    sentinel = bin_dir / "stale"
+    sentinel.touch()
+    install_stamp = venv / ".slackwright-installed"
+    install_stamp.touch()
+    uv_log = tmp_path / "uv.log"
+
+    result = _run_ensure_deps(
+        tmp_path=tmp_path,
+        venv=venv,
+        install_stamp=install_stamp,
+        uv_log=uv_log,
+        fail_first=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not sentinel.exists()
+    assert uv_log.read_text().splitlines() == [
+        "pip install -e .[dev] --quiet",
+        f"venv --python 3.12 {venv}",
+        "pip install -e .[dev] --quiet",
+    ]
+
+
 def test_ensure_browser_installs_when_executable_path_is_missing(tmp_path: Path) -> None:
     venv, package_dir, install_log = _fake_venv(tmp_path)
     browser_executable = tmp_path / "missing-browser"
