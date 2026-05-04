@@ -83,12 +83,16 @@ ensure_browser() {
   fi
 
   if ! "$VENV_DIR/bin/python" -c "
+import os
 import sys
+from pathlib import Path
 from playwright.sync_api import sync_playwright
 try:
     with sync_playwright() as p:
-        getattr(p, '$PW_BROWSER').executable_path
+        executable_path = getattr(p, '$PW_BROWSER').executable_path
 except Exception:
+    sys.exit(1)
+if not Path(executable_path).is_file() or not os.access(executable_path, os.X_OK):
     sys.exit(1)
 " >/dev/null 2>&1; then
     log "installing Playwright $PW_BROWSER (one-time, ~150 MB)"
@@ -118,61 +122,67 @@ run_cli() {
   PYTHONPATH="$HERE/src" exec "$VENV_DIR/bin/python" -m slackwright "$@"
 }
 
-# No args → show help and the CLI's help in one go.
-if [ $# -eq 0 ]; then
-  show_help
-  echo
-  bootstrap
-  PYTHONPATH="$HERE/src" "$VENV_DIR/bin/python" -m slackwright --help
-  exit 0
-fi
-
-cmd="$1"
-
-# Reserved dev-workflow subcommands. Anything else is forwarded to the
-# slackwright Python CLI (login / fetch / whoami / resolve / doctor /
-# top-level flags like --version / --state-dir / --help).
-case "$cmd" in
-  install)
-    shift
-    bootstrap "${1:-}"
-    log "ready: $VENV_DIR + $PW_BROWSER + dependencies"
-    ;;
-  test|tests)
-    shift
-    bootstrap
-    PYTHONPATH="$HERE/src" exec "$VENV_DIR/bin/pytest" "$@"
-    ;;
-  lint)
-    shift
-    bootstrap
-    exec "$VENV_DIR/bin/ruff" check src/ tests/ "$@"
-    ;;
-  fmt|format)
-    shift
-    bootstrap
-    "$VENV_DIR/bin/ruff" check --fix src/ tests/
-    "$VENV_DIR/bin/ruff" format src/ tests/ 2>/dev/null || true
-    ;;
-  shell)
-    bootstrap
-    log "entering venv-activated subshell — type 'exit' to leave"
-    exec "${SHELL:-/bin/bash}" -i -c "
-      source '$VENV_DIR/bin/activate'
-      export PYTHONPATH='$HERE/src'
-      exec '${SHELL:-/bin/bash}' -i
-    "
-    ;;
-  clean)
-    log "removing $VENV_DIR, .pytest_cache, .ruff_cache, **/__pycache__"
-    rm -rf "$VENV_DIR" .pytest_cache .ruff_cache
-    find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
-    ;;
-  help|-h|--help)
+main() {
+  # No args → show help and the CLI's help in one go.
+  if [ $# -eq 0 ]; then
     show_help
-    ;;
-  *)
-    # Forward everything else to the slackwright Python CLI.
-    run_cli "$@"
-    ;;
-esac
+    echo
+    bootstrap
+    PYTHONPATH="$HERE/src" "$VENV_DIR/bin/python" -m slackwright --help
+    exit 0
+  fi
+
+  cmd="$1"
+
+  # Reserved dev-workflow subcommands. Anything else is forwarded to the
+  # slackwright Python CLI (login / fetch / whoami / resolve / doctor /
+  # top-level flags like --version / --state-dir / --help).
+  case "$cmd" in
+    install)
+      shift
+      bootstrap "${1:-}"
+      log "ready: $VENV_DIR + $PW_BROWSER + dependencies"
+      ;;
+    test|tests)
+      shift
+      bootstrap
+      PYTHONPATH="$HERE/src" exec "$VENV_DIR/bin/pytest" "$@"
+      ;;
+    lint)
+      shift
+      bootstrap
+      exec "$VENV_DIR/bin/ruff" check src/ tests/ "$@"
+      ;;
+    fmt|format)
+      shift
+      bootstrap
+      "$VENV_DIR/bin/ruff" check --fix src/ tests/
+      "$VENV_DIR/bin/ruff" format src/ tests/ 2>/dev/null || true
+      ;;
+    shell)
+      bootstrap
+      log "entering venv-activated subshell — type 'exit' to leave"
+      exec "${SHELL:-/bin/bash}" -i -c "
+        source '$VENV_DIR/bin/activate'
+        export PYTHONPATH='$HERE/src'
+        exec '${SHELL:-/bin/bash}' -i
+      "
+      ;;
+    clean)
+      log "removing $VENV_DIR, .pytest_cache, .ruff_cache, **/__pycache__"
+      rm -rf "$VENV_DIR" .pytest_cache .ruff_cache
+      find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+      ;;
+    help|-h|--help)
+      show_help
+      ;;
+    *)
+      # Forward everything else to the slackwright Python CLI.
+      run_cli "$@"
+      ;;
+  esac
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

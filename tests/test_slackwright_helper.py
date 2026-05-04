@@ -1,0 +1,160 @@
+# Copyright 2026 Mikhail Yurasov
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
+"""Regression tests for the top-level ``./slackwright`` helper script."""
+
+from __future__ import annotations
+
+import os
+import shlex
+import shutil
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+HELPER = ROOT / "slackwright"
+
+
+def _write_executable(path: Path, text: str) -> None:
+    path.write_text(text)
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
+def _fake_venv(tmp_path: Path) -> tuple[Path, Path, Path]:
+    venv = tmp_path / "venv"
+    bin_dir = venv / "bin"
+    package_dir = tmp_path / "fakepkg"
+    (package_dir / "playwright").mkdir(parents=True)
+    bin_dir.mkdir(parents=True)
+
+    (package_dir / "playwright" / "__init__.py").write_text("")
+    (package_dir / "playwright" / "sync_api.py").write_text(
+        """
+from __future__ import annotations
+
+import os
+
+
+class _BrowserType:
+    @property
+    def executable_path(self) -> str:
+        return os.environ["FAKE_BROWSER_EXECUTABLE"]
+
+
+class _SyncPlaywright:
+    chromium = _BrowserType()
+
+    def __enter__(self) -> "_SyncPlaywright":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+
+def sync_playwright() -> _SyncPlaywright:
+    return _SyncPlaywright()
+""".lstrip()
+    )
+
+    _write_executable(
+        bin_dir / "python",
+        """#!/usr/bin/env bash
+export PYTHONPATH="${FAKE_PLAYWRIGHT_PACKAGE}${PYTHONPATH:+:${PYTHONPATH}}"
+exec "${REAL_PYTHON}" "$@"
+""",
+    )
+    _write_executable(
+        bin_dir / "playwright",
+        """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${FAKE_PLAYWRIGHT_INSTALL_LOG}"
+""",
+    )
+    return venv, package_dir, tmp_path / "playwright-install.log"
+
+
+def _run_ensure_browser(
+    *,
+    tmp_path: Path,
+    venv: Path,
+    package_dir: Path,
+    install_log: Path,
+    browser_executable: Path,
+) -> subprocess.CompletedProcess[str]:
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is required to test the slackwright helper script")
+
+    command = "\n".join(
+        [
+            "set -euo pipefail",
+            f"source {shlex.quote(str(HELPER))}",
+            f"VENV_DIR={shlex.quote(str(venv))}",
+            "PW_BROWSER=chromium",
+            "ensure_browser",
+        ]
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "FAKE_BROWSER_EXECUTABLE": str(browser_executable),
+            "FAKE_PLAYWRIGHT_INSTALL_LOG": str(install_log),
+            "FAKE_PLAYWRIGHT_PACKAGE": str(package_dir),
+            "REAL_PYTHON": sys.executable,
+        }
+    )
+    return subprocess.run(
+        [bash, "-c", command],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_ensure_browser_installs_when_executable_path_is_missing(tmp_path: Path) -> None:
+    venv, package_dir, install_log = _fake_venv(tmp_path)
+    browser_executable = tmp_path / "missing-browser"
+
+    result = _run_ensure_browser(
+        tmp_path=tmp_path,
+        venv=venv,
+        package_dir=package_dir,
+        install_log=install_log,
+        browser_executable=browser_executable,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert install_log.read_text() == "install chromium\n"
+
+
+def test_ensure_browser_skips_install_when_executable_is_present(tmp_path: Path) -> None:
+    venv, package_dir, install_log = _fake_venv(tmp_path)
+    browser_executable = tmp_path / "browser"
+    _write_executable(browser_executable, "#!/usr/bin/env bash\n")
+
+    result = _run_ensure_browser(
+        tmp_path=tmp_path,
+        venv=venv,
+        package_dir=package_dir,
+        install_log=install_log,
+        browser_executable=browser_executable,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not install_log.exists()
