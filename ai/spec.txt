@@ -142,6 +142,7 @@ full sharded tree):
     _files/<F_id>/_meta.json
     _index.yaml
     matches.jsonl
+    report.html                        # only after `slackwright report`
 
   <hash8> = first 8 hex chars of sha256("<channel_id>:<ts>"). The full
   64-hex digest is the dedup source of truth; the 8-char prefix only
@@ -152,6 +153,12 @@ full sharded tree):
 ALTERNATIVE FORMATS:
   --format jsonl   only matches.jsonl (slim ledger, one JSON match per line)
   --format raw     unprocessed Slack response objects under _raw/
+
+The HTML report (`slackwright report PATH`) is a separate post-fetch
+step that reads the directory above and writes a single self-contained
+`report.html` (inline CSS, no JavaScript, no external assets). It's
+the project's reference reader of the on-disk schema — schema-changing
+PRs must update report.py in the same commit.
 
 PER-MESSAGE JSON SHAPE (the on-disk contract):
   Every field returned by Slack's search endpoint is preserved verbatim,
@@ -181,9 +188,17 @@ _INDEX.YAML SUMMARY:
   plan (the human summary), query (the rendered Slack search string),
   counts: { created, updated, noop, by_month, by_channel_type,
             users_seen, channels_seen },
+  cost:  { elapsed_ms, api_calls, api_calls_by_method, bytes_in,
+           bytes_out, file_downloads, retries, rate_limited_seconds,
+           transport_errors, api_errors },
   extra: { users_written, channels_written, files: {...},
            search_stats: { pages_fetched, matches_total,
-                           matches_unique, chunks, truncated_chunks } }
+                           matches_unique, chunks, chunks_completed,
+                           chunks_skipped, truncated_chunks } }
+
+The `cost` block is the agent-facing observability surface; the
+`extra.search_stats.chunks_completed` list is what `--resume` reads
+to skip already-finished work.
 
 IDEMPOTENCY:
   Re-running over an existing tree merges cleanly. Per-message file
@@ -338,7 +353,9 @@ PAGINATION CAP
 7. AUTHENTICATION DETAILS
 --------------------------------------------------------------------------------
 
-The login flow:
+Two login paths, both producing the same persisted state:
+
+INTERACTIVE (default — `slackwright login --workspace URL`)
   1. Open a fresh Chromium context (no storage state) at the workspace
      URL.
   2. Poll page.evaluate(...) every second for window.boot_data.api_token,
@@ -352,6 +369,17 @@ The login flow:
   4. Persist Playwright storage state (cookies + localStorage) to
      <state-dir>/playwright-state.json (chmod 600).
 
+NON-INTERACTIVE (`slackwright login --token xoxc-... --cookie-d xoxd-...
+                  [--workspace URL --user-id ID --user-email E --team-id T]`)
+  Skips the headed browser flow entirely. Used by CI / unattended
+  agents that already hold valid Slack web credentials. Constructs the
+  Playwright storage state from scratch with just the `d` cookie
+  (scoped to `.slack.com`, HttpOnly + Secure), validates that the token
+  starts with `xox<letter>-` and the cookie with `xoxd-`, then persists
+  the same auth.json + playwright-state.json files the interactive flow
+  produces. Subsequent fetches replay the saved cookie jar
+  transparently.
+
 Subsequent fetch calls open a headed-or-headless context with that
 storage state and never need to log in again. If the token expires,
 the user is asked to re-run `slackwright login`.
@@ -364,7 +392,17 @@ HTTP TRANSPORT
   to mimic what the real web client sends. The xoxc token goes in the
   form body as `token=...`. Retries: 5-step exponential backoff (5s,
   15s, 30s, 60s, 120s) on 429 / 5xx / transport errors. ratelimited
-  responses honor the Retry-After header.
+  responses honor the Retry-After header. Every API call increments
+  the client's CostTracker (api_calls, bytes_in, bytes_out, retries,
+  rate_limited_seconds) so the manifest's `cost` block stays honest.
+
+CONCURRENCY
+  Every state-dir mutation (login, resolver cache writes, fetch) goes
+  through StateLock — an fcntl/msvcrt advisory file lock at
+  `<state-dir>/.slackwright.lock`. Two parallel slackwright invocations
+  against the same state dir serialise rather than race-corrupt the
+  caches. Lock acquisition has a configurable timeout; failure returns
+  ExitCode.IO with `error: lock_timeout`.
 
 
 --------------------------------------------------------------------------------
@@ -388,6 +426,14 @@ NAME LOOKUP
   raise LookupError with the candidate list — never silently picks one.
 
 CHANNEL LOOKUP works the same way against conversations.list.
+
+CACHE-ONLY (offline) MODE
+  Construct an EntityResolver with `client=None` for cache-only
+  resolution. ID-shaped inputs (matching the U/W/B or C/D/G regex)
+  return a stub UserRecord/ChannelRecord without any network call;
+  named inputs raise LookupError if not in cache. This is what powers
+  `slackwright fetch --explain`, which avoids spawning Chromium when
+  every supplied filter is either an id or already cached.
 
 CACHES
   <state-dir>/users.json          {users: {U_id: profile, ...}}
@@ -443,22 +489,45 @@ When --with-files is set:
 11. TEST STRATEGY
 --------------------------------------------------------------------------------
 
-The test suite (under tests/) is pytest-driven and runs in a few hundred
-milliseconds. Live Playwright tests are NOT in the default suite — they
-need real credentials. Strategy:
+The test suite (under tests/) is pytest-driven and runs in a few seconds
+on a modern laptop. Current baseline: **194 tests** across 11 files.
+Live Playwright tests are NOT in the default suite — they need real
+credentials.
+
+Strategy:
 
   * tests/conftest.py supplies a FakeClient that replaces SlackWebClient.
     It accepts canned responses + dynamic handlers, and records every
-    `api(method, params)` call so tests can assert traffic.
+    `api(method, params)` call so tests can assert traffic. Realistic
+    Slack ids only (e.g. `UALICE00`, `CGENERAL`) — synthetic ids with
+    underscores fail the resolver's regex check.
   * Pure helpers (query builder, date math, slugifier, hash, payload
-    parsers) are unit-tested directly.
-  * Resolver, search runner, archive writer, file downloader each have
-    their own test file and exercise the full surface against the
-    FakeClient.
+    parsers, exit-code table, cost-tracker counters, lock fileops,
+    HTML renderer mrkdwn helpers) are unit-tested directly.
+  * Resolver, search runner, archive writer, file downloader, schema
+    introspector, HTML report renderer, Result + ExitCode envelope,
+    StateLock, CostTracker each have their own test file and exercise
+    the full surface against the FakeClient.
   * test_integration.py wires resolver + runner + writer together to
     prove an end-to-end fetch produces a complete archive on disk.
-  * test_cli.py only exercises the argparse layer — subcommand handlers
-    that need live Playwright sessions are not invoked there.
+  * test_cli.py only exercises the argparse layer — subcommand
+    handlers that need live Playwright sessions are not invoked there.
+  * test_lock.py uses multiprocessing (with a sentinel-file handshake
+    to dodge spawn-warmup race conditions on macOS).
+
+Test files (current map):
+  test_archive.py        archive writer + read_index + chunks_completed
+  test_auth.py           normalize_url + interactive + non-interactive
+  test_cli.py            argparse surface for every subcommand + globals
+  test_cost.py           CostTracker counters + finalise + elapsed_ms
+  test_files.py          attachment downloader + dedup + idempotency
+  test_integration.py    end-to-end fetch -> archive -> on-disk schema
+  test_lock.py           StateLock acquire / release / cross-process
+  test_report.py         HTML renderer pure helpers + end-to-end html
+  test_resolver.py       id / email / handle / name / `me` resolution
+  test_result.py         ExitCode + Result + JSON envelope rendering
+  test_schema.py         describe_parser introspection + JSON-roundtrip
+  test_search.py         query builder + chunker + runner + timeout
 
 ADDING TESTS
   * Behavior-changing PRs MUST add or update tests. Coverage is not
@@ -467,6 +536,10 @@ ADDING TESTS
   * For new Slack response shapes: add a representative fixture to the
     FakeClient registration in conftest.py (or register inline in the
     test) — never depend on live Slack.
+  * For new exit codes: extend test_result.py's TestExitCode coverage
+    so the documented numeric values stay locked in.
+  * For new --json envelope fields: add a `to_json()` round-trip test
+    so accidental key renames are caught.
 
 
 --------------------------------------------------------------------------------

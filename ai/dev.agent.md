@@ -39,11 +39,12 @@ Never bootstrap the venv manually. Use the project's helper script:
 ./slackwright shell          # subshell with venv activated
 ./slackwright clean          # remove .venv and caches
 
-./slackwright login ...      # forwarded to the slackwright Python CLI
-./slackwright fetch ...      # forwarded to the slackwright Python CLI
-./slackwright resolve ...    # forwarded to the slackwright Python CLI
-./slackwright whoami         # forwarded to the slackwright Python CLI
-./slackwright doctor         # forwarded to the slackwright Python CLI
+./slackwright login ...                          # forwarded to the slackwright Python CLI
+./slackwright fetch ...                          # forwarded to the slackwright Python CLI
+./slackwright resolve ...                        # forwarded to the slackwright Python CLI
+./slackwright whoami | doctor                    # forwarded to the slackwright Python CLI
+./slackwright describe-archive PATH | report PATH  # forwarded to the slackwright Python CLI
+./slackwright --schema | --json <subcmd> | -q ...  # global flags also forwarded
 ```
 
 `./slackwright` is idempotent — every subcommand auto-installs whatever
@@ -52,6 +53,39 @@ is missing on first use. Reserved dev-workflow names are
 forwarded to the Python CLI. There is **no** `make`, **no** `tox`,
 **no** `pre-commit`. If you want a new workflow, add a reserved
 subcommand to the `./slackwright` script rather than a parallel tool.
+
+### Result + ExitCode + JSON envelope
+
+Every CLI subcommand handler returns a :class:`slackwright.result.Result`;
+``main()`` renders it as either human text (default) or one JSON
+document on stdout (``--json``). Three rules follow:
+
+1. **Never print to stdout from a handler.** Populate ``data["human"]``
+   for the human-mode renderer to emit, and let
+   ``Result.render_json()`` handle ``--json``. Stdout under ``--json``
+   must be exactly one JSON document — agents parse it with
+   ``json.load(stdout)``.
+2. **Stable exit codes only.** Failure modes use a documented
+   :class:`ExitCode` member (`USAGE / NO_LOGIN / RESOLUTION_FAILED /
+   TRANSIENT_API / PERMANENT_API / IO / INTERRUPTED`). New failure
+   classes need a new enum member with a remediation hint in
+   ``result.py``'s ``_REMEDIATION`` table; the exit-code numbers stay
+   stable across versions.
+3. **Stable error codes only.** ``error`` is a lowercase snake_case
+   identifier (e.g. ``no_login``, ``resolution_failed``,
+   ``rate_limited``). It's part of the public contract — agents key off
+   it. Don't invent new codes lightly; reuse the closest existing one
+   when possible.
+
+### Cost / observability discipline
+
+Every network call goes through :class:`SlackWebClient.api()` or
+:meth:`SlackWebClient.download_file()`, both of which already update
+the client's :class:`CostTracker`. New code paths that bypass these
+must update the right counters themselves (``record_api_call``,
+``record_retry``, ``record_rate_limit_sleep``, ...). The CLI surfaces
+the resulting ``cost`` block in both ``_index.yaml`` and the
+``--json`` envelope; agents budget against it.
 
 ### Code style
 
@@ -81,10 +115,15 @@ subcommand to the `./slackwright` script rather than a parallel tool.
   If you cannot articulate a test for the change, the change isn't
   ready.
 - **Use the `FakeClient` from `tests/conftest.py`** for anything that
-  would otherwise need a live Slack API. Never depend on real Slack in
-  the default suite.
-- **`./dev test -q` must pass clean** before any commit. The suite is
-  fast (sub-second); there is no excuse to skip it.
+  would otherwise need a live Slack API. The pre-seeded fixture
+  exposes canned `users.list` / `conversations.list` / `auth.test`
+  responses; for new methods, register them inline via
+  `fake_client.register(method, payload)` or
+  `fake_client.register_handler(method, fn)`. Never depend on real
+  Slack in the default suite.
+- **`./slackwright test -q` must pass clean** before any commit. The
+  suite is fast (a few seconds); there is no excuse to skip it.
+  Current baseline: **194 tests** across 11 test files.
 - **Test names are descriptive.** Prefer
   `def test_resolver_falls_back_to_email_lookup_when_handle_not_cached`
   over `def test_resolver_email`.
@@ -95,8 +134,9 @@ subcommand to the `./slackwright` script rather than a parallel tool.
 ### Slack API discipline
 
 - **Never invent endpoints or response shapes.** When unsure, ask the
-  user to run `./dev run resolve …` or `./dev run doctor` against their
-  workspace and paste the output, or test against a captured fixture.
+  user to run `./slackwright resolve …` or `./slackwright doctor`
+  against their workspace and paste the JSON output (`--json` makes
+  this trivial), or test against a captured fixture.
 - **Treat `search.modules.messages` as load-bearing but unofficial.**
   Wrap any new code that calls Slack endpoints with the same retry +
   backoff machinery in `client.py`. Don't reinvent the transport.
@@ -125,10 +165,28 @@ Apply on every commit:
 7. **Ask before squashing or rebasing published history.** Force-pushes
    to `main` need explicit user approval.
 
+### On-disk schema discipline
+
+The output layout (sharded `messages/YYYY/MM/DD/...json`, `_users/`,
+`_channels/`, `_index.yaml`, `matches.jsonl`, `_files/<F_id>/...`) is a
+**public contract**. Three constraints follow:
+
+- The dedup key is `sha256("<channel_id>:<ts>")` — never change the
+  hashing scheme without coordinating across `archive.py` and every
+  downstream consumer.
+- Schema-changing PRs **must** bump `ARCHIVE_SCHEMA` in `archive.py`
+  AND update the canonical reader in `report.py` (the HTML renderer
+  is the project's reference reader of the layout).
+- The `--json` envelope shape (top-level `ok` / `command` /
+  `exit_code` / `exit_code_name` / `error` / `message` /
+  `remediation` / `data`) is also part of the contract; agents key
+  off it. Don't reorder or rename top-level keys.
+
 ### File creation
 
 - **Every new `.py` file gets the Apache 2.0 copyright header** that's
-  already on every existing file. Copy/paste it from any current module.
+  already on every existing file. Copy/paste it from any current
+  module.
 - **No new files without a clear home.** If the new file belongs in a
   module that doesn't exist yet, propose the module first (in chat)
   and wait for approval.
@@ -147,8 +205,8 @@ For anything beyond a one-line typo fix:
    should match the spec language.
 4. **Implement the smallest change that makes the test pass.** Avoid
    speculative generalization.
-5. **Run `./dev fmt && ./dev lint && ./dev test`.** All three must
-   pass clean.
+5. **Run `./slackwright fmt && ./slackwright lint && ./slackwright test`.**
+   All three must pass clean.
 6. **Look back at the diff.** Are there comments that just narrate?
    Are types missing on any new function? Is the docstring honest about
    what the function does?
@@ -158,9 +216,13 @@ For anything beyond a one-line typo fix:
 
 - Adding a new runtime dependency (`PyYAML` and `playwright` are it).
 - Adding a new top-level subcommand to the CLI.
-- Changing the on-disk archive layout (it's a public contract).
-- Changing the public Python API surface (anything imported from
-  `slackwright.<module>`).
+- Changing the on-disk archive layout (it's a public contract; bump
+  `ARCHIVE_SCHEMA` in the same PR).
+- Changing the `--json` envelope shape or adding / repurposing an
+  exit-code value (both are stable contracts).
+- Changing the public Python API surface (anything in
+  `slackwright.__all__`). Adding new exports is fine; renames or
+  removals need approval.
 - Removing or significantly weakening a test.
 - Anything you find yourself wanting to mark with `# TODO: ask`.
 
