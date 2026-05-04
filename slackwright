@@ -57,10 +57,11 @@ ensure_venv() {
 }
 
 playwright_driver_ready() {
-  local node
-  for node in "$VENV_DIR"/lib/python*/site-packages/playwright/driver/node \
-              "$VENV_DIR"/lib/python*/site-packages/playwright/driver/node.exe; do
-    if [ -x "$node" ]; then
+  local driver_dir
+  for driver_dir in "$VENV_DIR"/lib/python*/site-packages/playwright/driver; do
+    if { [ -x "$driver_dir/node" ] || [ -x "$driver_dir/node.exe" ]; } && \
+       [ -r "$driver_dir/package/cli.js" ]; then
+      "$VENV_DIR/bin/playwright" --version >/dev/null 2>&1 || return 1
       return 0
     fi
   done

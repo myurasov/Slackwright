@@ -35,7 +35,12 @@ def _write_executable(path: Path, text: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def _seed_dep_entrypoints(venv: Path, *, with_driver: bool = True) -> None:
+def _seed_dep_entrypoints(
+    venv: Path,
+    *,
+    with_driver: bool = True,
+    with_cli: bool = True,
+) -> None:
     bin_dir = venv / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     for name in ("python", "playwright", "pytest", "ruff"):
@@ -44,6 +49,10 @@ def _seed_dep_entrypoints(venv: Path, *, with_driver: bool = True) -> None:
         driver_dir = venv / "lib" / "python3.12" / "site-packages" / "playwright" / "driver"
         driver_dir.mkdir(parents=True, exist_ok=True)
         _write_executable(driver_dir / "node", "#!/usr/bin/env bash\n")
+        if with_cli:
+            package_dir = driver_dir / "package"
+            package_dir.mkdir(parents=True, exist_ok=True)
+            package_dir.joinpath("cli.js").write_text("#!/usr/bin/env node\n")
 
 
 def _fake_venv(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -171,9 +180,10 @@ if [ "$1" = "pip" ]; then
     printf '#!/usr/bin/env bash\n' > "${FAKE_VENV}/bin/${name}"
     chmod +x "${FAKE_VENV}/bin/${name}"
   done
-  mkdir -p "${FAKE_VENV}/lib/python3.12/site-packages/playwright/driver"
+  mkdir -p "${FAKE_VENV}/lib/python3.12/site-packages/playwright/driver/package"
   printf '#!/usr/bin/env bash\n' > "${FAKE_VENV}/lib/python3.12/site-packages/playwright/driver/node"
   chmod +x "${FAKE_VENV}/lib/python3.12/site-packages/playwright/driver/node"
+  printf '#!/usr/bin/env node\n' > "${FAKE_VENV}/lib/python3.12/site-packages/playwright/driver/package/cli.js"
 fi
 """,
     )
@@ -241,6 +251,34 @@ def test_ensure_deps_resyncs_when_playwright_driver_is_missing(tmp_path: Path) -
     assert uv_log.read_text() == "pip install -e .[dev] --quiet\n"
     assert (
         venv / "lib" / "python3.12" / "site-packages" / "playwright" / "driver" / "node"
+    ).exists()
+
+
+def test_ensure_deps_resyncs_when_playwright_cli_payload_is_missing(tmp_path: Path) -> None:
+    venv = tmp_path / "venv"
+    _seed_dep_entrypoints(venv, with_cli=False)
+    install_stamp = venv / ".slackwright-installed"
+    install_stamp.touch()
+    uv_log = tmp_path / "uv.log"
+
+    result = _run_ensure_deps(
+        tmp_path=tmp_path,
+        venv=venv,
+        install_stamp=install_stamp,
+        uv_log=uv_log,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert uv_log.read_text() == "pip install -e .[dev] --quiet\n"
+    assert (
+        venv
+        / "lib"
+        / "python3.12"
+        / "site-packages"
+        / "playwright"
+        / "driver"
+        / "package"
+        / "cli.js"
     ).exists()
 
 
