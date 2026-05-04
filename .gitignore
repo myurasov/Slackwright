@@ -33,3 +33,5 @@ slackwright-out/
 
 # Playwright browsers (large, machine-local)
 .playwright-browsers/
+
+**/__*
