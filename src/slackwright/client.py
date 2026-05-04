@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from .auth import AuthBundle
+from .cost import CostTracker
 
 
 # Slack's web client never sets these explicitly, but our Playwright build
@@ -93,6 +94,7 @@ class SlackWebClient:
         playwright,
         browser,
         state_dir: Path,
+        cost: CostTracker | None = None,
     ) -> None:
         self.bundle = bundle
         self._page = page
@@ -100,6 +102,7 @@ class SlackWebClient:
         self._playwright = playwright
         self._browser = browser
         self._state_dir = state_dir
+        self.cost = cost or CostTracker()
 
     # --- lifecycle ---
 
@@ -112,6 +115,7 @@ class SlackWebClient:
         state_dir: Path,
         headed: bool = False,
         executable_path: str | None = None,
+        cost: CostTracker | None = None,
     ) -> Iterator[SlackWebClient]:
         """Spin up a Playwright context with the saved storage state and
         yield a ready-to-use client.
@@ -152,6 +156,7 @@ class SlackWebClient:
                         playwright=playwright,
                         browser=browser,
                         state_dir=state_dir,
+                        cost=cost,
                     )
                     yield client
                     # Refresh the persisted storage state so cookies that
@@ -185,6 +190,9 @@ class SlackWebClient:
         body = dict(params or {})
         body.setdefault("token", self.bundle.api_token)
         url = f"{self.bundle.api_url}/{method}"
+        # Best-effort outbound size: form-encoded body length is the
+        # dominant byte cost; we don't bother with the headers.
+        bytes_out_estimate = sum(len(str(k)) + len(str(v)) + 2 for k, v in body.items())
 
         attempt = 0
         last_status: int | None = None
@@ -198,10 +206,12 @@ class SlackWebClient:
                     timeout=timeout_ms,
                 )
             except Exception as e:
+                self.cost.record_transport_error()
                 if attempt >= len(backoff_schedule):
                     raise SlackWebError(method, f"transport: {e}") from e
                 wait = backoff_schedule[attempt]
                 attempt += 1
+                self.cost.record_retry()
                 sys.stderr.write(
                     f"[slackwright] {method} transport error ({e}); "
                     f"retry {attempt}/{len(backoff_schedule)} in {wait}s\n"
@@ -211,6 +221,11 @@ class SlackWebClient:
 
             last_status = resp.status
             last_text = resp.text() or ""
+            self.cost.record_api_call(
+                method,
+                bytes_in=len(last_text.encode("utf-8", errors="ignore")),
+                bytes_out=bytes_out_estimate,
+            )
             if resp.ok:
                 try:
                     payload = resp.json()
@@ -219,12 +234,15 @@ class SlackWebClient:
                 if isinstance(payload, dict) and payload.get("ok"):
                     return payload
                 err = (payload or {}).get("error") if isinstance(payload, dict) else "unknown"
+                self.cost.record_api_error()
                 # ratelimited can be wrapped in ok:false too
                 if err == "ratelimited":
                     if attempt >= len(backoff_schedule):
                         raise SlackWebError(method, err, payload)
                     retry_after = int(resp.headers.get("retry-after") or backoff_schedule[attempt])
                     attempt += 1
+                    self.cost.record_retry()
+                    self.cost.record_rate_limit_sleep(retry_after)
                     sys.stderr.write(
                         f"[slackwright] {method} ratelimited; "
                         f"sleeping {retry_after}s (retry {attempt}/{len(backoff_schedule)})\n"
@@ -237,6 +255,9 @@ class SlackWebClient:
                 retry_after_header = resp.headers.get("retry-after") if hasattr(resp, "headers") else None
                 wait = int(retry_after_header) if retry_after_header and retry_after_header.isdigit() else backoff_schedule[attempt]
                 attempt += 1
+                self.cost.record_retry()
+                if resp.status == 429:
+                    self.cost.record_rate_limit_sleep(wait)
                 sys.stderr.write(
                     f"[slackwright] {method} HTTP {resp.status}; "
                     f"retry {attempt}/{len(backoff_schedule)} in {wait}s\n"
@@ -266,7 +287,9 @@ class SlackWebClient:
                 "download_file",
                 f"HTTP {resp.status} for {url}: {(resp.text() or '')[:200]!r}",
             )
-        return resp.body()
+        body = resp.body()
+        self.cost.record_file_download(bytes_in=len(body))
+        return body
 
     # --- diagnostics ---
 

@@ -42,11 +42,18 @@ class Progress:
         self._files = 0
         self._spinner_idx = 0
         self._is_tty = sys.stderr.isatty()
+        self._enabled = True
+
+    def disable(self) -> None:
+        """Suppress all output (used by --quiet / --json / --stream-json)."""
+        self._enabled = False
 
     def start(self) -> None:
         self._t0 = time.time()
 
     def note(self, msg: str) -> None:
+        if not self._enabled:
+            return
         sys.stderr.write(f"[{self.label}] {msg}\n")
         sys.stderr.flush()
 
@@ -57,6 +64,8 @@ class Progress:
     def tick(self, *, matches: int = 0, files: int = 0) -> None:
         self._matches += matches
         self._files += files
+        if not self._enabled:
+            return
         if self._is_tty:
             spin = self.SPINNER[self._spinner_idx % len(self.SPINNER)]
             self._spinner_idx += 1
@@ -70,6 +79,8 @@ class Progress:
             sys.stderr.flush()
 
     def stop(self) -> None:
+        if not self._enabled:
+            return
         if self._is_tty:
             sys.stderr.write("\r\033[K")
         elapsed = int(time.time() - self._t0)
