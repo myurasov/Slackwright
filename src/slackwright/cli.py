@@ -16,7 +16,7 @@
 
 Subcommands::
 
-    slackwright login [--workspace URL] [--token TOK --cookie-d COOKIE]
+    slackwright login [--workspace WORKSPACE] [--token TOK --cookie-d COOKIE]
     slackwright whoami
     slackwright resolve PERSON_OR_CHANNEL [--kind {auto,user,channel}]
     slackwright fetch  [--from PERSON] [--to PERSON] [--with PERSON]

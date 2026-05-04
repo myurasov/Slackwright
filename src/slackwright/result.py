@@ -60,7 +60,7 @@ class ExitCode(enum.IntEnum):
 # `error` field and decide based on the code; the human message is always
 # rendered too.
 _REMEDIATION: dict[str, str] = {
-    "no_login": "Run: slackwright login --workspace https://<your-workspace>.slack.com",
+    "no_login": "Run: slackwright login --workspace <workspace-short-name>",
     "resolution_failed": "Re-check --from / --to / --with / --in; pass an email or U-id if the name is ambiguous.",
     "transient_api": "Wait a few minutes and re-run; the Slack API was rate-limited or unavailable.",
     "permanent_api": "Re-login with `slackwright login`; the saved session may be invalid or revoked.",

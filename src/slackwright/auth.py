@@ -323,7 +323,7 @@ def load_auth(state_dir: Path) -> AuthBundle:
     if not p.exists():
         raise FileNotFoundError(
             f"no slackwright login found at {p}. "
-            f"Run `slackwright login --workspace https://<your-workspace>.slack.com` first."
+            f"Run `slackwright login --workspace <workspace-short-name>` first."
         )
     return AuthBundle.from_json(json.loads(p.read_text()))
 

@@ -18,7 +18,7 @@ integrations.
 User-facing surface:
 
 ```bash
-./slackwright login --workspace https://acme.slack.com   # one-time
+./slackwright login --workspace acme                     # one-time
 ./slackwright fetch  --from me --days 14                 # search + extract
 ./slackwright whoami | resolve | doctor                  # auxiliaries
 ./slackwright install | test | lint | fmt | shell | clean  # dev workflow

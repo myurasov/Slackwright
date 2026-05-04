@@ -56,7 +56,7 @@ If you'd rather install slackwright system-wide via pip:
 ```bash
 pip install -e .[dev]
 playwright install chromium
-slackwright login --workspace https://acme.slack.com
+slackwright login --workspace acme
 ```
 
 ## Quick start
@@ -67,7 +67,8 @@ installed via pip):
 
 ```bash
 # 1. One-time login (opens a real Chrome window — sign in normally).
-./slackwright login --workspace https://acme.slack.com
+#    Short names expand to https://<name>.slack.com.
+./slackwright login --workspace acme
 
 # 2. Fetch every message you sent in the last 14 days.
 ./slackwright fetch --from me --days 14 --out ./out
@@ -244,7 +245,7 @@ sibling machine, or pulled from a password manager / secret store):
 
 ```bash
 ./slackwright login \
-    --workspace https://acme.slack.com \
+    --workspace acme \
     --token xoxc-... \
     --cookie-d xoxd-... \
     --user-id UALICE00 \

@@ -239,11 +239,13 @@ JSON ENVELOPE (--json mode)
 
 SUBCOMMANDS
 
-  login --workspace URL [--timeout SECONDS] [--executable-path PATH]
+  login --workspace WORKSPACE [--timeout SECONDS] [--executable-path PATH]
         [--token xoxc-... --cookie-d xoxd-...]
         [--user-id ID --user-email E --team-id T]
-    Headed mode (default): open a real browser at the workspace URL and
-    wait for window.boot_data.api_token to appear.
+    Headed mode (default): open a real browser at the workspace and
+    wait for window.boot_data.api_token to appear. WORKSPACE may be a
+    short name (`acme` -> `https://acme.slack.com`), a `*.slack.com`
+    host, or a full URL.
     Non-interactive mode: --token and --cookie-d together skip the
     headed flow and persist a pre-extracted session. The optional
     --user-id / --user-email / --team-id flags annotate the auth bundle.
@@ -355,9 +357,9 @@ PAGINATION CAP
 
 Two login paths, both producing the same persisted state:
 
-INTERACTIVE (default — `slackwright login --workspace URL`)
-  1. Open a fresh Chromium context (no storage state) at the workspace
-     URL.
+INTERACTIVE (default — `slackwright login --workspace WORKSPACE`)
+  1. Normalize WORKSPACE (`acme` -> `https://acme.slack.com`) and open
+     a fresh Chromium context (no storage state) there.
   2. Poll page.evaluate(...) every second for window.boot_data.api_token,
      falling back to localStorage.localConfig_v2.teams[*].token if
      boot_data is not exposed (Slack has shuffled this around).
@@ -370,7 +372,7 @@ INTERACTIVE (default — `slackwright login --workspace URL`)
      <state-dir>/playwright-state.json (chmod 600).
 
 NON-INTERACTIVE (`slackwright login --token xoxc-... --cookie-d xoxd-...
-                  [--workspace URL --user-id ID --user-email E --team-id T]`)
+                  [--workspace WORKSPACE --user-id ID --user-email E --team-id T]`)
   Skips the headed browser flow entirely. Used by CI / unattended
   agents that already hold valid Slack web credentials. Constructs the
   Playwright storage state from scratch with just the `d` cookie
