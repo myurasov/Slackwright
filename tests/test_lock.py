@@ -42,12 +42,15 @@ class TestStateLock:
 
     def test_records_holder_pid(self, tmp_path: Path) -> None:
         import os
+
         lock = StateLock(tmp_path)
         with lock.acquire(timeout=5):
             txt = (tmp_path / ".slackwright.lock").read_text().strip()
             assert txt == str(os.getpid())
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="multiprocessing flock test is POSIX-specific")
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="multiprocessing flock test is POSIX-specific"
+    )
     def test_concurrent_lock_blocks(self, tmp_path: Path) -> None:
         # Spawn a child that holds the lock for ~3s, signalling readiness
         # via a sentinel file so we don't race the spawn warmup time

@@ -39,15 +39,15 @@ class CostTracker:
     :meth:`finalise` is called (or fetched fresh via :attr:`elapsed_ms_now`).
     """
 
-    api_calls: int = 0                    # total tools/call style requests sent
+    api_calls: int = 0  # total tools/call style requests sent
     api_calls_by_method: dict[str, int] = dataclasses.field(default_factory=dict)
-    bytes_in: int = 0                     # response bytes received from Slack
-    bytes_out: int = 0                    # request bytes sent to Slack (best-effort)
-    file_downloads: int = 0               # successful Slack file downloads
-    retries: int = 0                      # transient retries after a backoff
-    rate_limited_seconds: int = 0         # cumulative seconds slept on rate-limit
-    transport_errors: int = 0             # exceptions raised by the HTTP transport
-    api_errors: int = 0                   # documented Slack `ok:false` errors
+    bytes_in: int = 0  # response bytes received from Slack
+    bytes_out: int = 0  # request bytes sent to Slack (best-effort)
+    file_downloads: int = 0  # successful Slack file downloads
+    retries: int = 0  # transient retries after a backoff
+    rate_limited_seconds: int = 0  # cumulative seconds slept on rate-limit
+    transport_errors: int = 0  # exceptions raised by the HTTP transport
+    api_errors: int = 0  # documented Slack `ok:false` errors
 
     started_at: float = dataclasses.field(default_factory=time.monotonic)
     finished_at: float | None = None

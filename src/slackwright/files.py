@@ -55,7 +55,7 @@ def iter_files_in_messages(messages: Iterable[dict[str, Any]]) -> Iterable[dict[
     deleted) so the downloader doesn't burn requests on dead links.
     """
     for m in messages:
-        for f in (m.get("files") or []):
+        for f in m.get("files") or []:
             if not isinstance(f, dict):
                 continue
             if f.get("mode") == "tombstone":
@@ -64,8 +64,8 @@ def iter_files_in_messages(messages: Iterable[dict[str, Any]]) -> Iterable[dict[
                 continue
             yield f
         # Slack also exposes file unfurls under `attachments[*].files`
-        for att in (m.get("attachments") or []):
-            for f in (att.get("files") or []):
+        for att in m.get("attachments") or []:
+            for f in att.get("files") or []:
                 if isinstance(f, dict) and f.get("id"):
                     yield f
 
@@ -154,5 +154,7 @@ class FileDownloader:
         self.stats.bytes_total += len(data)
         res = FileDownloadResult(file_id=fid, name=name, path=target, bytes_written=len(data))
         self.stats.by_id[fid] = res
-        self._on_progress(f"file {fid} -> {target.relative_to(self._files_root.parent)} ({len(data):,}B)")
+        self._on_progress(
+            f"file {fid} -> {target.relative_to(self._files_root.parent)} ({len(data):,}B)"
+        )
         return res

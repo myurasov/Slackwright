@@ -249,11 +249,19 @@ class SlackWebClient:
                     )
                     time.sleep(retry_after)
                     continue
-                raise SlackWebError(method, err or "unknown", payload if isinstance(payload, dict) else None)
+                raise SlackWebError(
+                    method, err or "unknown", payload if isinstance(payload, dict) else None
+                )
 
             if resp.status in _TRANSIENT_HTTP_STATUSES and attempt < len(backoff_schedule):
-                retry_after_header = resp.headers.get("retry-after") if hasattr(resp, "headers") else None
-                wait = int(retry_after_header) if retry_after_header and retry_after_header.isdigit() else backoff_schedule[attempt]
+                retry_after_header = (
+                    resp.headers.get("retry-after") if hasattr(resp, "headers") else None
+                )
+                wait = (
+                    int(retry_after_header)
+                    if retry_after_header and retry_after_header.isdigit()
+                    else backoff_schedule[attempt]
+                )
                 attempt += 1
                 self.cost.record_retry()
                 if resp.status == 429:

@@ -143,7 +143,9 @@ def _channel_token(c: ResolvedChannel) -> str:
     return c.id
 
 
-def build_query(plan: SearchPlan, *, after: dt.date | None = None, before: dt.date | None = None) -> str:
+def build_query(
+    plan: SearchPlan, *, after: dt.date | None = None, before: dt.date | None = None
+) -> str:
     """Render a SearchPlan to a Slack search query string.
 
     The ``after`` / ``before`` overrides are used by the chunker — the
@@ -343,11 +345,7 @@ class SearchRunner:
             matches = messages.get("matches") or []
             paging = messages.get("paging") or {}
             if page == 1:
-                total = int(
-                    paging.get("total")
-                    or messages.get("total")
-                    or len(matches)
-                )
+                total = int(paging.get("total") or messages.get("total") or len(matches))
                 page_count = int(paging.get("pages") or 1)
                 if total >= SEARCH_MAX_RESULTS:
                     # We can still stream what's on this page; the caller

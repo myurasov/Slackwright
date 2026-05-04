@@ -80,22 +80,41 @@ class TestRenderText:
 def _seed_archive(out: Path, *, with_files: bool = False) -> None:
     """Write a small slackwright archive that report.py can render."""
     resolver = EntityResolver(client=None, state_dir=out / ".state")
-    resolver.remember_user(UserRecord(
-        id="UALICE00", name="alice", real_name="Alice Engineer",
-        email="alice@example.com",
-    ))
-    resolver.remember_user(UserRecord(
-        id="UBOB0001", name="bob.builder", real_name="Bob Builder",
-        email="bob@example.com",
-    ))
-    resolver.remember_channel(ChannelRecord(
-        id="CGENERAL", name="general", type="channel", is_private=False,
-        purpose="company chat",
-    ))
+    resolver.remember_user(
+        UserRecord(
+            id="UALICE00",
+            name="alice",
+            real_name="Alice Engineer",
+            email="alice@example.com",
+        )
+    )
+    resolver.remember_user(
+        UserRecord(
+            id="UBOB0001",
+            name="bob.builder",
+            real_name="Bob Builder",
+            email="bob@example.com",
+        )
+    )
+    resolver.remember_channel(
+        ChannelRecord(
+            id="CGENERAL",
+            name="general",
+            type="channel",
+            is_private=False,
+            purpose="company chat",
+        )
+    )
 
-    def msg(channel: str, ts: str, user: str, text: str,
-            *, files: list[dict[str, Any]] | None = None,
-            thread_ts: str | None = None) -> dict[str, Any]:
+    def msg(
+        channel: str,
+        ts: str,
+        user: str,
+        text: str,
+        *,
+        files: list[dict[str, Any]] | None = None,
+        thread_ts: str | None = None,
+    ) -> dict[str, Any]:
         m: dict[str, Any] = {
             "channel": {"id": channel, "name": "general"},
             "ts": ts,
@@ -110,28 +129,43 @@ def _seed_archive(out: Path, *, with_files: bool = False) -> None:
         return m
 
     files = (
-        [{"id": "F1ABC123", "name": "screenshot.png", "mode": "hosted",
-          "url_private": "https://files.slack.com/files-pri/T0/F1ABC123/screenshot.png"}]
-        if with_files else None
+        [
+            {
+                "id": "F1ABC123",
+                "name": "screenshot.png",
+                "mode": "hosted",
+                "url_private": "https://files.slack.com/files-pri/T0/F1ABC123/screenshot.png",
+            }
+        ]
+        if with_files
+        else None
     )
     messages = [
-        msg("CGENERAL", "1745613600.000000", "UALICE00",
+        msg(
+            "CGENERAL",
+            "1745613600.000000",
+            "UALICE00",
             "Hi <@UBOB0001> — here's the *plan*:\n```python\nprint('hi')\n```",
-            files=files),
-        msg("CGENERAL", "1745613601.000000", "UBOB0001",
-            "thanks!", thread_ts="1745613600.000000"),
+            files=files,
+        ),
+        msg("CGENERAL", "1745613601.000000", "UBOB0001", "thanks!", thread_ts="1745613600.000000"),
     ]
     writer = ArchiveWriter(
-        out, resolver=resolver, sa_user_id="UALICE00",
-        format="archive", plan_summary="from=@alice",
+        out,
+        resolver=resolver,
+        sa_user_id="UALICE00",
+        format="archive",
+        plan_summary="from=@alice",
     )
     for m in messages:
         writer.write_match(m)
     writer.write_users_cache(resolver)
     writer.write_channels_cache(resolver)
-    writer.write_index(plan_summary="from=@alice", search_query="from:@alice",
-                      cost={"api_calls": 4, "elapsed_ms": 1234, "bytes_in": 8192,
-                            "rate_limited_seconds": 0})
+    writer.write_index(
+        plan_summary="from=@alice",
+        search_query="from:@alice",
+        cost={"api_calls": 4, "elapsed_ms": 1234, "bytes_in": 8192, "rate_limited_seconds": 0},
+    )
 
 
 class TestRenderReport:
@@ -144,17 +178,17 @@ class TestRenderReport:
         # Basic structural assertions
         assert "<!DOCTYPE html>" in text
         assert "<title>" in text
-        assert "Alice Engineer" in text   # author name resolved
+        assert "Alice Engineer" in text  # author name resolved
         assert "alice@example.com" in text  # author email rendered
         assert "thanks!" in text
-        assert "from:@alice" in text       # query embedded in run-meta
+        assert "from:@alice" in text  # query embedded in run-meta
         # Inline CSS, no external assets
         assert "<style>" in text
         assert "<script" not in text
         # Channel and thread structure
-        assert "general" in text          # channel name
-        assert "company chat" in text     # purpose
-        assert 'class="mention"' in text   # @-mention rendered
+        assert "general" in text  # channel name
+        assert "company chat" in text  # purpose
+        assert 'class="mention"' in text  # @-mention rendered
 
     def test_custom_target_path(self, tmp_path: Path) -> None:
         _seed_archive(tmp_path)
@@ -186,10 +220,17 @@ class TestRenderReport:
 
     def test_empty_archive(self, tmp_path: Path) -> None:
         # Just an _index.yaml, no messages.
-        (tmp_path / "_index.yaml").write_text(yaml.safe_dump({
-            "schema_version": 1, "tool": "slackwright", "plan": "(empty)",
-            "query": "", "counts": {"created": 0},
-        }))
+        (tmp_path / "_index.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": 1,
+                    "tool": "slackwright",
+                    "plan": "(empty)",
+                    "query": "",
+                    "counts": {"created": 0},
+                }
+            )
+        )
         target = render_report(tmp_path)
         text = target.read_text(encoding="utf-8")
         assert "No messages in this archive." in text

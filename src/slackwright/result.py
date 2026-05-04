@@ -151,8 +151,7 @@ class Result:
         s.write("\n")
         s.flush()
 
-    def render_human(self, *, stdout: IO[str] | None = None,
-                     stderr: IO[str] | None = None) -> None:
+    def render_human(self, *, stdout: IO[str] | None = None, stderr: IO[str] | None = None) -> None:
         """Emit a human-friendly summary.
 
         On success: caller-provided text on stdout (when ``data`` carries

@@ -69,7 +69,7 @@ def describe_parser(parser: argparse.ArgumentParser) -> dict[str, Any]:
 
 def _describe_actions(parser: argparse.ArgumentParser) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    for action in parser._actions:                       # noqa: SLF001 (intentional)
+    for action in parser._actions:  # noqa: SLF001 (intentional)
         if isinstance(action, argparse._SubParsersAction):
             continue
         if isinstance(action, argparse._HelpAction):
@@ -108,7 +108,7 @@ def _describe_action(action: argparse.Action) -> dict[str, Any]:
 
 def _describe_subparsers(parser: argparse.ArgumentParser) -> dict[str, Any]:
     subs: dict[str, Any] = {}
-    for action in parser._actions:                       # noqa: SLF001
+    for action in parser._actions:  # noqa: SLF001
         if not isinstance(action, argparse._SubParsersAction):
             continue
         for name, sub in action.choices.items():
@@ -118,7 +118,8 @@ def _describe_subparsers(parser: argparse.ArgumentParser) -> dict[str, Any]:
                 "description": (sub.description or "").strip(),
                 "options": _describe_actions(sub),
                 "positionals": [
-                    _describe_action(a) for a in sub._actions       # noqa: SLF001
+                    _describe_action(a)
+                    for a in sub._actions  # noqa: SLF001
                     if not a.option_strings and not isinstance(a, argparse._SubParsersAction)
                 ],
             }

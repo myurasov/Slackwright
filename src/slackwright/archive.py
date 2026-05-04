@@ -94,8 +94,9 @@ def _channel_slug(channel_id: str, channel_name: str | None, channel_type: str) 
     return f"{prefix}-{channel_id[-8:].lower()}"
 
 
-def message_filepath(out_root: Path, channel_id: str, ts: str, channel_name: str | None,
-                     channel_type: str) -> Path:
+def message_filepath(
+    out_root: Path, channel_id: str, ts: str, channel_name: str | None, channel_type: str
+) -> Path:
     h = message_key_hash(channel_id, ts)[:8]
     date_iso = _ts_to_local_date(ts)
     yyyy, mm, dd = date_iso.split("-")
@@ -186,8 +187,12 @@ class ArchiveWriter:
     def _write_archive_one(self, msg: dict[str, Any], cid: str, ts: str) -> str:
         channel_meta = self._resolver.get_channel(cid) if self._resolver else None
         ch_obj = msg.get("channel") if isinstance(msg.get("channel"), dict) else {}
-        channel_name = (ch_obj.get("name") if ch_obj else None) or (channel_meta.name if channel_meta else None)
-        channel_type = (channel_meta.type if channel_meta else None) or _infer_channel_type(cid, ch_obj)
+        channel_name = (ch_obj.get("name") if ch_obj else None) or (
+            channel_meta.name if channel_meta else None
+        )
+        channel_type = (channel_meta.type if channel_meta else None) or _infer_channel_type(
+            cid, ch_obj
+        )
 
         target = message_filepath(self._out, cid, ts, channel_name, channel_type)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -260,7 +265,7 @@ class ArchiveWriter:
         u = msg.get("user")
         if u:
             self.stats.user_ids_seen.add(u)
-        for att in (msg.get("attachments") or []):
+        for att in msg.get("attachments") or []:
             au = att.get("author_id")
             if au:
                 self.stats.user_ids_seen.add(au)
@@ -337,9 +342,14 @@ class ArchiveWriter:
             n += 1
         return n
 
-    def write_index(self, *, plan_summary: str, search_query: str | None = None,
-                    extra: dict[str, Any] | None = None,
-                    cost: dict[str, Any] | None = None) -> Path:
+    def write_index(
+        self,
+        *,
+        plan_summary: str,
+        search_query: str | None = None,
+        extra: dict[str, Any] | None = None,
+        cost: dict[str, Any] | None = None,
+    ) -> Path:
         idx: dict[str, Any] = {
             "schema_version": 1,
             "tool": "slackwright",
@@ -438,6 +448,8 @@ def _render_file(payload: dict[str, Any]) -> str:
 
 def _diff_significant(old: dict[str, Any], new: dict[str, Any]) -> bool:
     """Strip ``_archive`` (always changes on capture) and compare the rest."""
+
     def strip(d: dict[str, Any]) -> dict[str, Any]:
         return {k: v for k, v in d.items() if k != "_archive"}
+
     return strip(old) != strip(new)

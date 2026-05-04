@@ -44,16 +44,22 @@ class TestDescribeParser:
     def test_subcommands_present(self) -> None:
         s = describe_parser(_build_parser())
         subs = s["subcommands"]
-        for name in ("login", "whoami", "fetch", "resolve", "doctor",
-                     "describe-archive", "report"):
+        for name in ("login", "whoami", "fetch", "resolve", "doctor", "describe-archive", "report"):
             assert name in subs, f"missing subcommand {name!r}"
 
     def test_fetch_options_include_new_flags(self) -> None:
         s = describe_parser(_build_parser())
         fetch = s["subcommands"]["fetch"]
         opt_names = {o["dest"] for o in fetch["options"]}
-        for new in ("explain", "resume", "stream_json", "timeout",
-                     "with_files", "format", "max_results"):
+        for new in (
+            "explain",
+            "resume",
+            "stream_json",
+            "timeout",
+            "with_files",
+            "format",
+            "max_results",
+        ):
             assert new in opt_names, f"missing fetch flag {new!r}"
 
     def test_login_options_include_non_interactive(self) -> None:

@@ -94,9 +94,7 @@ class FakeClient:
     def register(self, method: str, response: dict[str, Any]) -> None:
         self._responses[method] = response
 
-    def register_handler(
-        self, method: str, fn: Callable[[dict[str, Any]], dict[str, Any]]
-    ) -> None:
+    def register_handler(self, method: str, fn: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
         self._handlers[method] = fn
 
     def register_file(self, url: str, payload: bytes) -> None:

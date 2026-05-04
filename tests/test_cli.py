@@ -44,15 +44,23 @@ class TestLogin:
         assert ns.timeout == 300
 
     def test_non_interactive_flags(self, parser) -> None:
-        ns = parser.parse_args([
-            "login",
-            "--workspace", "https://acme.slack.com",
-            "--token", "xoxc-abc",
-            "--cookie-d", "xoxd-def",
-            "--user-id", "UALICE00",
-            "--user-email", "alice@example.com",
-            "--team-id", "T12345",
-        ])
+        ns = parser.parse_args(
+            [
+                "login",
+                "--workspace",
+                "https://acme.slack.com",
+                "--token",
+                "xoxc-abc",
+                "--cookie-d",
+                "xoxd-def",
+                "--user-id",
+                "UALICE00",
+                "--user-email",
+                "alice@example.com",
+                "--team-id",
+                "T12345",
+            ]
+        )
         assert ns.api_token == "xoxc-abc"
         assert ns.cookie_d == "xoxd-def"
         assert ns.user_id == "UALICE00"
@@ -78,14 +86,21 @@ class TestFetch:
         assert ns.with_files is False
 
     def test_from_to_with_in_query(self, parser) -> None:
-        ns = parser.parse_args([
-            "fetch",
-            "--from", "alice@example.com",
-            "--to", "bob",
-            "--with", "UCARLA01",
-            "--in", "#general",
-            "--query", "kubernetes has:link",
-        ])
+        ns = parser.parse_args(
+            [
+                "fetch",
+                "--from",
+                "alice@example.com",
+                "--to",
+                "bob",
+                "--with",
+                "UCARLA01",
+                "--in",
+                "#general",
+                "--query",
+                "kubernetes has:link",
+            ]
+        )
         assert ns.from_user == "alice@example.com"
         assert ns.to_user == "bob"
         assert ns.with_user == "UCARLA01"
@@ -191,10 +206,15 @@ class TestNewSubcommands:
         assert ns.report_out is None
 
     def test_report_custom_target(self, parser) -> None:
-        ns = parser.parse_args([
-            "report", "/tmp/some-out",
-            "--out", "/tmp/myreport.html",
-            "--title", "Q2 fetch",
-        ])
+        ns = parser.parse_args(
+            [
+                "report",
+                "/tmp/some-out",
+                "--out",
+                "/tmp/myreport.html",
+                "--title",
+                "Q2 fetch",
+            ]
+        )
         assert ns.report_out == "/tmp/myreport.html"
         assert ns.title == "Q2 fetch"

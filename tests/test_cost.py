@@ -73,6 +73,7 @@ class TestCostTracker:
 
     def test_elapsed_ms_is_monotonic(self) -> None:
         import time as _t
+
         c = CostTracker()
         _t.sleep(0.01)
         a = c.elapsed_ms_now
@@ -82,6 +83,7 @@ class TestCostTracker:
 
     def test_finalise_freezes_elapsed(self) -> None:
         import time as _t
+
         c = CostTracker()
         _t.sleep(0.01)
         c.finalise()

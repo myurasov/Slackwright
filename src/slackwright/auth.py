@@ -64,13 +64,13 @@ class AuthBundle:
     them together via ``load_auth(state_dir)``.
     """
 
-    workspace_url: str           # e.g. https://acme.enterprise.slack.com
-    api_url: str                 # e.g. https://acme.enterprise.slack.com/api
-    api_token: str               # xoxc-...
+    workspace_url: str  # e.g. https://acme.enterprise.slack.com
+    api_url: str  # e.g. https://acme.enterprise.slack.com/api
+    api_token: str  # xoxc-...
     team_id: str | None
     enterprise_id: str | None
     user_id: str
-    user_name: str | None        # Slack handle (boot_data.username)
+    user_name: str | None  # Slack handle (boot_data.username)
     user_real_name: str | None
     user_email: str | None
     extracted_at: float

@@ -106,8 +106,11 @@ class TestTsToLocalDate:
 class TestMessageFilepath:
     def test_layout(self, tmp_path: Path) -> None:
         p = message_filepath(
-            tmp_path, "CGENERAL", "1745613600.000000",
-            channel_name="general", channel_type="channel",
+            tmp_path,
+            "CGENERAL",
+            "1745613600.000000",
+            channel_name="general",
+            channel_type="channel",
         )
         # tmp_path/messages/YYYY/MM/DD/<file>.json
         rel = p.relative_to(tmp_path)
@@ -125,9 +128,15 @@ class TestMessageFilepath:
 # ---------------------------------------------------------------------------
 
 
-def _match(channel_id: str, ts: str, *, user: str = "UALICE00", text: str = "hi",
-           channel_name: str = "general", files: list[dict[str, Any]] | None = None
-           ) -> dict[str, Any]:
+def _match(
+    channel_id: str,
+    ts: str,
+    *,
+    user: str = "UALICE00",
+    text: str = "hi",
+    channel_name: str = "general",
+    files: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     m: dict[str, Any] = {
         "channel": {"id": channel_id, "name": channel_name},
         "ts": ts,
@@ -195,11 +204,13 @@ class TestArchiveWriterArchiveFormat:
 
 class TestArchiveWriterIndex:
     def test_index_summary(self, out_dir: Path) -> None:
-        w = ArchiveWriter(out_dir, sa_user_id="UALICE00", format="archive",
-                          plan_summary="from=@alice")
+        w = ArchiveWriter(
+            out_dir, sa_user_id="UALICE00", format="archive", plan_summary="from=@alice"
+        )
         w.write_match(_match("CGENERAL", "1745613608.000000", user="UALICE00"))
-        w.write_match(_match("DBOB0001", "1745613609.000000", user="UBOB0001",
-                             channel_name="UBOB0001"))
+        w.write_match(
+            _match("DBOB0001", "1745613609.000000", user="UBOB0001", channel_name="UBOB0001")
+        )
         idx_path = w.write_index(plan_summary="from=@alice", search_query="from:@alice")
         idx = yaml.safe_load(idx_path.read_text())
         assert idx["tool"] == "slackwright"
@@ -214,14 +225,23 @@ class TestArchiveWriterUserChannelCaches:
     def test_writes_user_yamls(self, out_dir: Path, state_dir: Path) -> None:
         # Build a resolver pre-loaded with user records (no live client).
         resolver = EntityResolver(client=None, state_dir=state_dir)
-        resolver.remember_user(UserRecord(
-            id="UALICE00", name="alice", real_name="Alice Engineer",
-            email="alice@example.com",
-        ))
+        resolver.remember_user(
+            UserRecord(
+                id="UALICE00",
+                name="alice",
+                real_name="Alice Engineer",
+                email="alice@example.com",
+            )
+        )
         resolver.remember_user(UserRecord(id="UBOB0001", name="bob", real_name="Bob"))
-        resolver.remember_channel(ChannelRecord(
-            id="CGENERAL", name="general", type="channel", is_private=False,
-        ))
+        resolver.remember_channel(
+            ChannelRecord(
+                id="CGENERAL",
+                name="general",
+                type="channel",
+                is_private=False,
+            )
+        )
 
         w = ArchiveWriter(out_dir, resolver=resolver, sa_user_id="UALICE00", format="archive")
         w.write_match(_match("CGENERAL", "1745613610.000000", user="UALICE00"))
@@ -273,9 +293,11 @@ class TestPreviouslyCompletedChunks:
         w.write_index(
             plan_summary="from=@alice",
             search_query="from:@alice",
-            extra={"search_stats": {
-                "chunks_completed": ["2026-04-01..2026-04-30", "2026-03-01..2026-03-31"],
-            }},
+            extra={
+                "search_stats": {
+                    "chunks_completed": ["2026-04-01..2026-04-30", "2026-03-01..2026-03-31"],
+                }
+            },
         )
         completed = previously_completed_chunks(out_dir)
         assert completed == {"2026-04-01..2026-04-30", "2026-03-01..2026-03-31"}

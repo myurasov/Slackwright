@@ -181,7 +181,10 @@ class TestSearchRunnerSinglePage:
             "search.modules.messages",
             {
                 "ok": True,
-                "items": [_match("CGENERAL", "1700000001.000100"), _match("CGENERAL", "1700000002.000100")],
+                "items": [
+                    _match("CGENERAL", "1700000001.000100"),
+                    _match("CGENERAL", "1700000002.000100"),
+                ],
                 "paging": {"total": 2, "pages": 1},
             },
         )
@@ -288,7 +291,9 @@ class TestSearchRunnerResume:
         fake_client.register_handler("search.modules.messages", handler)
         resolver = EntityResolver(fake_client, state_dir=state_dir)
         runner = SearchRunner(
-            fake_client, resolver, on_progress=lambda _: None,
+            fake_client,
+            resolver,
+            on_progress=lambda _: None,
             skip_chunks={"2026-04-01..2026-04-30"},
         )
         plan = SearchPlan(
@@ -323,13 +328,15 @@ class TestSearchRunnerResume:
 class TestSearchRunnerDeadline:
     def test_deadline_in_past_aborts_immediately(self, state_dir: Path, fake_client) -> None:
         import time as _time
+
         fake_client.register(
             "search.modules.messages",
             {"ok": True, "items": [], "paging": {"total": 0, "pages": 0}},
         )
         resolver = EntityResolver(fake_client, state_dir=state_dir)
         runner = SearchRunner(
-            fake_client, resolver,
+            fake_client,
+            resolver,
             on_progress=lambda _: None,
             deadline=_time.monotonic() - 1,  # already past
         )

@@ -85,7 +85,7 @@ def is_self_token(value: str) -> bool:
 @dataclass
 class UserRecord:
     id: str
-    name: str | None = None         # @handle (the ``name`` field)
+    name: str | None = None  # @handle (the ``name`` field)
     real_name: str | None = None
     display_name: str | None = None
     email: str | None = None
@@ -107,12 +107,12 @@ class UserRecord:
 class ChannelRecord:
     id: str
     name: str | None = None
-    type: str = "channel"           # channel | im | mpim | group
+    type: str = "channel"  # channel | im | mpim | group
     is_private: bool = False
     is_archived: bool = False
     topic: str | None = None
     purpose: str | None = None
-    user: str | None = None         # IM: id of the other user
+    user: str | None = None  # IM: id of the other user
     cached_at: float = field(default_factory=time.time)
 
     def to_json(self) -> dict[str, Any]:
@@ -339,16 +339,12 @@ class EntityResolver:
         if len(candidates) == 1:
             return ResolvedUser(candidates[0][1])
         if len(candidates) > 1:
-            sample = ", ".join(
-                f"{u.real_name or u.name} ({u.id})" for _, u in candidates[:6]
-            )
+            sample = ", ".join(f"{u.real_name or u.name} ({u.id})" for _, u in candidates[:6])
             raise LookupError(
                 f"ambiguous user reference {v!r} matched {len(candidates)} users: {sample}"
                 f"{' …' if len(candidates) > 6 else ''}"
             )
-        raise LookupError(
-            f"no Slack user matches {v!r} (try the email or the U… id)"
-        )
+        raise LookupError(f"no Slack user matches {v!r} (try the email or the U… id)")
 
     def _resolve_self(self) -> ResolvedUser:
         if self._client is None:
@@ -388,9 +384,7 @@ class EntityResolver:
         if cid and cid in self._channels:
             return ResolvedChannel(self._channels[cid])
 
-        raise LookupError(
-            f"no channel matches {v!r} (try the leading # or the C… id)"
-        )
+        raise LookupError(f"no channel matches {v!r} (try the leading # or the C… id)")
 
     # --- network-backed lookups ---
 
@@ -488,7 +482,9 @@ class EntityResolver:
             if not cursor:
                 break
             if page > 200:
-                sys.stderr.write("[slackwright] conversations.list cursor exceeded 200 pages, stopping\n")
+                sys.stderr.write(
+                    "[slackwright] conversations.list cursor exceeded 200 pages, stopping\n"
+                )
                 break
         self._channels_listed = True
         self.save_caches()

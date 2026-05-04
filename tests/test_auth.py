@@ -50,10 +50,7 @@ class TestNormalizeWorkspaceUrl:
         )
 
     def test_strips_trailing_slash(self) -> None:
-        assert (
-            normalize_workspace_url("https://acme.slack.com///")
-            == "https://acme.slack.com"
-        )
+        assert normalize_workspace_url("https://acme.slack.com///") == "https://acme.slack.com"
 
 
 class TestWorkspaceToApiUrl:

@@ -36,8 +36,16 @@ class TestExitCode:
     def test_table_contents(self) -> None:
         rows = exit_code_table()
         names = {row["name"] for row in rows}
-        assert {"ok", "usage", "no_login", "resolution_failed", "transient_api",
-                "permanent_api", "io", "interrupted"} <= names
+        assert {
+            "ok",
+            "usage",
+            "no_login",
+            "resolution_failed",
+            "transient_api",
+            "permanent_api",
+            "io",
+            "interrupted",
+        } <= names
         # Every non-OK row carries a remediation hint.
         for row in rows:
             if row["name"] == "ok":
@@ -82,8 +90,9 @@ class TestResultFailure:
         assert "slackwright login" in r.remediation
 
     def test_failure_to_json(self) -> None:
-        r = Result.failure("fetch", ExitCode.RESOLUTION_FAILED,
-                           "resolution_failed", "no match for 'xyz'")
+        r = Result.failure(
+            "fetch", ExitCode.RESOLUTION_FAILED, "resolution_failed", "no match for 'xyz'"
+        )
         d = r.to_json()
         assert d["ok"] is False
         assert d["exit_code"] == 4
@@ -93,8 +102,9 @@ class TestResultFailure:
         assert "remediation" in d
 
     def test_explicit_remediation_overrides_default(self) -> None:
-        r = Result.failure("login", ExitCode.PERMANENT_API, "permanent_api",
-                           "boom", remediation="Try X instead.")
+        r = Result.failure(
+            "login", ExitCode.PERMANENT_API, "permanent_api", "boom", remediation="Try X instead."
+        )
         assert r.remediation == "Try X instead."
 
     def test_render_human_writes_to_stderr_on_failure(self) -> None:

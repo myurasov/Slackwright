@@ -53,8 +53,12 @@ class TestIterFiles:
 
     def test_skips_tombstones(self) -> None:
         msgs = [
-            {"files": [{"id": "F4", "name": "deleted.png", "mode": "tombstone"},
-                       {"id": "F5", "name": "ok.png"}]}
+            {
+                "files": [
+                    {"id": "F4", "name": "deleted.png", "mode": "tombstone"},
+                    {"id": "F5", "name": "ok.png"},
+                ]
+            }
         ]
         out = list(iter_files_in_messages(msgs))
         assert [f["id"] for f in out] == ["F5"]
@@ -70,12 +74,14 @@ class TestFileDownloader:
         fake_client.register_file(url, b"PNG-bytes")
         msgs = [
             {
-                "files": [{
-                    "id": "F1",
-                    "name": "hello.png",
-                    "url_private_download": url,
-                    "url_private": url,
-                }]
+                "files": [
+                    {
+                        "id": "F1",
+                        "name": "hello.png",
+                        "url_private_download": url,
+                        "url_private": url,
+                    }
+                ]
             }
         ]
         d = FileDownloader(fake_client, tmp_path, on_progress=lambda _: None)
@@ -90,11 +96,13 @@ class TestFileDownloader:
         url = "https://files.slack.com/files-pri/T1/F1/hello.png"
         fake_client.register_file(url, b"PNG-bytes")
         msg = {
-            "files": [{
-                "id": "F1",
-                "name": "hello.png",
-                "url_private_download": url,
-            }]
+            "files": [
+                {
+                    "id": "F1",
+                    "name": "hello.png",
+                    "url_private_download": url,
+                }
+            ]
         }
         d1 = FileDownloader(fake_client, tmp_path, on_progress=lambda _: None)
         d1.download_for_messages([msg])
@@ -115,11 +123,13 @@ class TestFileDownloader:
         url = "https://files.slack.com/files-pri/T1/F1/hello.png"
         fake_client.register_file(url, b"PNG-bytes")
         msg = {
-            "files": [{
-                "id": "F1",
-                "name": "hello.png",
-                "url_private_download": url,
-            }]
+            "files": [
+                {
+                    "id": "F1",
+                    "name": "hello.png",
+                    "url_private_download": url,
+                }
+            ]
         }
         d = FileDownloader(fake_client, tmp_path, on_progress=lambda _: None)
         stats = d.download_for_messages([msg, msg, msg])

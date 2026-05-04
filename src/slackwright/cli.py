@@ -110,21 +110,25 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--version", action="version", version=f"slackwright {__version__}")
     p.add_argument(
-        "--json", action="store_true",
+        "--json",
+        action="store_true",
         help="emit a single JSON Result document on stdout (machine-readable mode).",
     )
     p.add_argument(
-        "-q", "--quiet", action="store_true",
+        "-q",
+        "--quiet",
+        action="store_true",
         help="suppress stderr progress (the JSON envelope is unaffected).",
     )
     p.add_argument(
-        "--schema", action="store_true",
+        "--schema",
+        action="store_true",
         help="print the JSON schema describing every subcommand + flag, then exit.",
     )
     p.add_argument(
         "--state-dir",
         help="override the slackwright state dir "
-             "(default: ~/.cache/slackwright or $SLACKWRIGHT_STATE_DIR).",
+        "(default: ~/.cache/slackwright or $SLACKWRIGHT_STATE_DIR).",
     )
     sub = p.add_subparsers(dest="cmd", metavar="<cmd>")
 
@@ -137,22 +141,31 @@ def _build_parser() -> argparse.ArgumentParser:
         "--workspace",
         help="workspace URL (https://acme.slack.com), short name (acme), or full E-Grid URL.",
     )
-    sp.add_argument("--timeout", type=int, default=300,
-                    help="seconds to wait for login to complete (default 300).")
-    sp.add_argument("--executable-path",
-                    help="path to a custom Chromium binary (default: Playwright's bundled Chromium).")
-    sp.add_argument("--token", dest="api_token",
-                    help="non-interactive: pre-extracted xoxc-... web token. "
-                         "Use with --cookie-d to skip the headed browser flow.")
-    sp.add_argument("--cookie-d", dest="cookie_d",
-                    help="non-interactive: pre-extracted xoxd-... `d` cookie. "
-                         "Use with --token to skip the headed browser flow.")
-    sp.add_argument("--user-id",
-                    help="optional user-id metadata for non-interactive login.")
-    sp.add_argument("--user-email",
-                    help="optional user-email metadata for non-interactive login.")
-    sp.add_argument("--team-id",
-                    help="optional team-id metadata for non-interactive login.")
+    sp.add_argument(
+        "--timeout",
+        type=int,
+        default=300,
+        help="seconds to wait for login to complete (default 300).",
+    )
+    sp.add_argument(
+        "--executable-path",
+        help="path to a custom Chromium binary (default: Playwright's bundled Chromium).",
+    )
+    sp.add_argument(
+        "--token",
+        dest="api_token",
+        help="non-interactive: pre-extracted xoxc-... web token. "
+        "Use with --cookie-d to skip the headed browser flow.",
+    )
+    sp.add_argument(
+        "--cookie-d",
+        dest="cookie_d",
+        help="non-interactive: pre-extracted xoxd-... `d` cookie. "
+        "Use with --token to skip the headed browser flow.",
+    )
+    sp.add_argument("--user-id", help="optional user-id metadata for non-interactive login.")
+    sp.add_argument("--user-email", help="optional user-email metadata for non-interactive login.")
+    sp.add_argument("--team-id", help="optional team-id metadata for non-interactive login.")
 
     # --- whoami ---
     sub.add_parser("whoami", help="print the logged-in user info.")
@@ -167,11 +180,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("value", help="name, email, handle, channel name, or Slack id.")
     sp.add_argument(
-        "--kind", choices=["auto", "user", "channel"], default="auto",
+        "--kind",
+        choices=["auto", "user", "channel"],
+        default="auto",
         help="force interpretation as user or channel (default: auto-detect).",
     )
-    sp.add_argument("--headed", action="store_true",
-                    help="run resolver browser headed (default headless).")
+    sp.add_argument(
+        "--headed", action="store_true", help="run resolver browser headed (default headless)."
+    )
 
     # --- fetch ---
     sp = sub.add_parser(
@@ -210,48 +226,91 @@ def _build_parser() -> argparse.ArgumentParser:
             """
         ),
     )
-    sp.add_argument("--from", dest="from_user",
-                    help="message author (name / email / handle / U-id / `me`).")
-    sp.add_argument("--to", dest="to_user",
-                    help="message recipient (DMs only) — same input flexibility as --from.")
-    sp.add_argument("--with", dest="with_user",
-                    help="DMs/MPIMs with this user — same input flexibility as --from.")
-    sp.add_argument("--in", dest="in_channel",
-                    help="restrict to a channel (name with or without #, or C-id).")
-    sp.add_argument("--query", dest="extra_query",
-                    help="extra raw search terms appended verbatim (any Slack search syntax).")
-    sp.add_argument("--days", type=int,
-                    help="messages from the last N days (mutually exclusive with --since/--until).")
+    sp.add_argument(
+        "--from", dest="from_user", help="message author (name / email / handle / U-id / `me`)."
+    )
+    sp.add_argument(
+        "--to",
+        dest="to_user",
+        help="message recipient (DMs only) — same input flexibility as --from.",
+    )
+    sp.add_argument(
+        "--with",
+        dest="with_user",
+        help="DMs/MPIMs with this user — same input flexibility as --from.",
+    )
+    sp.add_argument(
+        "--in", dest="in_channel", help="restrict to a channel (name with or without #, or C-id)."
+    )
+    sp.add_argument(
+        "--query",
+        dest="extra_query",
+        help="extra raw search terms appended verbatim (any Slack search syntax).",
+    )
+    sp.add_argument(
+        "--days",
+        type=int,
+        help="messages from the last N days (mutually exclusive with --since/--until).",
+    )
     sp.add_argument("--since", help="inclusive lower bound, YYYY-MM-DD.")
     sp.add_argument("--until", help="inclusive upper bound, YYYY-MM-DD (default: today).")
-    sp.add_argument("--max", dest="max_results", type=int,
-                    help="hard cap on number of matches written (default: no cap).")
-    sp.add_argument("--out", default="./slackwright-out",
-                    help="output directory (default: ./slackwright-out).")
-    sp.add_argument("--with-files", action="store_true",
-                    help="also download attached files into <out>/_files/.")
+    sp.add_argument(
+        "--max",
+        dest="max_results",
+        type=int,
+        help="hard cap on number of matches written (default: no cap).",
+    )
+    sp.add_argument(
+        "--out", default="./slackwright-out", help="output directory (default: ./slackwright-out)."
+    )
+    sp.add_argument(
+        "--with-files", action="store_true", help="also download attached files into <out>/_files/."
+    )
     bg = sp.add_mutually_exclusive_group()
-    bg.add_argument("--headless", dest="headed", action="store_false",
-                    help="run browser headless (default).")
-    bg.add_argument("--headed", dest="headed", action="store_true",
-                    help="run browser visible (useful for debugging, optional).")
+    bg.add_argument(
+        "--headless", dest="headed", action="store_false", help="run browser headless (default)."
+    )
+    bg.add_argument(
+        "--headed",
+        dest="headed",
+        action="store_true",
+        help="run browser visible (useful for debugging, optional).",
+    )
     sp.set_defaults(headed=False)
-    sp.add_argument("--format", choices=["archive", "jsonl", "raw"], default="archive",
-                    help="output format (default: archive).")
-    sp.add_argument("--executable-path",
-                    help="path to a custom Chromium binary (default: Playwright's bundled Chromium).")
-    sp.add_argument("-v", "--verbose", action="store_true",
-                    help="extra logging on stderr.")
-    sp.add_argument("--dry-run", action="store_true",
-                    help="resolve filters and print the search query, but don't fetch.")
-    sp.add_argument("--explain", action="store_true",
-                    help="emit the resolved plan + chunk schedule + query as JSON, no fetch.")
-    sp.add_argument("--resume", action="store_true",
-                    help="re-use --out: skip chunks already marked complete in its _index.yaml.")
-    sp.add_argument("--stream-json", action="store_true",
-                    help="emit one JSON match per line on stdout as they arrive.")
-    sp.add_argument("--timeout", type=int, default=None,
-                    help="abort the fetch after N seconds (best-effort).")
+    sp.add_argument(
+        "--format",
+        choices=["archive", "jsonl", "raw"],
+        default="archive",
+        help="output format (default: archive).",
+    )
+    sp.add_argument(
+        "--executable-path",
+        help="path to a custom Chromium binary (default: Playwright's bundled Chromium).",
+    )
+    sp.add_argument("-v", "--verbose", action="store_true", help="extra logging on stderr.")
+    sp.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="resolve filters and print the search query, but don't fetch.",
+    )
+    sp.add_argument(
+        "--explain",
+        action="store_true",
+        help="emit the resolved plan + chunk schedule + query as JSON, no fetch.",
+    )
+    sp.add_argument(
+        "--resume",
+        action="store_true",
+        help="re-use --out: skip chunks already marked complete in its _index.yaml.",
+    )
+    sp.add_argument(
+        "--stream-json",
+        action="store_true",
+        help="emit one JSON match per line on stdout as they arrive.",
+    )
+    sp.add_argument(
+        "--timeout", type=int, default=None, help="abort the fetch after N seconds (best-effort)."
+    )
 
     # --- describe-archive ---
     sp = sub.add_parser(
@@ -266,10 +325,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="generate a self-contained HTML report from a slackwright output dir.",
     )
     sp.add_argument("path", help="path to a slackwright output directory.")
-    sp.add_argument("--out", dest="report_out",
-                    help="path to the HTML file to write (default: <path>/report.html).")
-    sp.add_argument("--title",
-                    help="optional title for the report (default: derived from the run plan).")
+    sp.add_argument(
+        "--out",
+        dest="report_out",
+        help="path to the HTML file to write (default: <path>/report.html).",
+    )
+    sp.add_argument(
+        "--title", help="optional title for the report (default: derived from the run plan)."
+    )
 
     return p
 
@@ -286,12 +349,16 @@ def _cmd_login(args: argparse.Namespace) -> Result:
         # Non-interactive path
         if not (args.api_token and args.cookie_d):
             return Result.failure(
-                "login", ExitCode.USAGE, "usage",
+                "login",
+                ExitCode.USAGE,
+                "usage",
                 "--token and --cookie-d must be supplied together for non-interactive login.",
             )
         if not args.workspace:
             return Result.failure(
-                "login", ExitCode.USAGE, "usage",
+                "login",
+                ExitCode.USAGE,
+                "usage",
                 "--workspace is required for non-interactive login.",
             )
         try:
@@ -311,7 +378,9 @@ def _cmd_login(args: argparse.Namespace) -> Result:
             return Result.failure("login", ExitCode.USAGE, "usage", str(e))
         except Exception as e:
             return Result.failure(
-                "login", ExitCode.PERMANENT_API, "permanent_api",
+                "login",
+                ExitCode.PERMANENT_API,
+                "permanent_api",
                 f"non-interactive login failed: {e}",
             )
         return Result.success(
@@ -323,15 +392,16 @@ def _cmd_login(args: argparse.Namespace) -> Result:
                 "user_email": bundle.user_email,
                 "state_dir": str(state_dir),
                 "human": (
-                    f"login OK (non-interactive) — {bundle.workspace_url} "
-                    f"(state-dir: {state_dir})"
+                    f"login OK (non-interactive) — {bundle.workspace_url} (state-dir: {state_dir})"
                 ),
             },
         )
 
     if not args.workspace:
         return Result.failure(
-            "login", ExitCode.USAGE, "usage",
+            "login",
+            ExitCode.USAGE,
+            "usage",
             "--workspace is required for the headed login flow.",
         )
 
@@ -341,11 +411,14 @@ def _cmd_login(args: argparse.Namespace) -> Result:
         f"Sign in there; I'll detect the session automatically.\n"
     )
     try:
-        with StateLock(state_dir).acquire(timeout=30), LoginSession(
-            workspace_url=workspace_url,
-            state_dir=state_dir,
-            executable_path=args.executable_path,
-        ) as s:
+        with (
+            StateLock(state_dir).acquire(timeout=30),
+            LoginSession(
+                workspace_url=workspace_url,
+                state_dir=state_dir,
+                executable_path=args.executable_path,
+            ) as s,
+        ):
             bundle = s.run_interactive(timeout_s=args.timeout)
     except TimeoutError as e:
         return Result.failure("login", ExitCode.PERMANENT_API, "login_timeout", str(e))
@@ -353,13 +426,17 @@ def _cmd_login(args: argparse.Namespace) -> Result:
         return Result.failure("login", ExitCode.IO, "lock_timeout", str(e))
     except Exception as e:
         return Result.failure(
-            "login", ExitCode.PERMANENT_API, "login_failed",
+            "login",
+            ExitCode.PERMANENT_API,
+            "login_failed",
             f"login failed: {e}",
         )
 
     if not is_plausible_api_token(bundle.api_token):
         return Result.failure(
-            "login", ExitCode.PERMANENT_API, "implausible_token",
+            "login",
+            ExitCode.PERMANENT_API,
+            "implausible_token",
             f"extracted token does not look like a Slack web token "
             f"({bundle.api_token[:6]!r}…). Login probably partial; try again.",
         )
@@ -413,31 +490,42 @@ def _cmd_resolve(args: argparse.Namespace) -> Result:
             resolver = EntityResolver(client, state_dir=state_dir)
             kind = args.kind
             try:
-                if kind == "channel" or (kind == "auto" and (args.value.startswith("#") or is_channel_id(args.value))):
+                if kind == "channel" or (
+                    kind == "auto" and (args.value.startswith("#") or is_channel_id(args.value))
+                ):
                     rc = resolver.resolve_channel(args.value)
                     resolver.save_caches()
                     cost.finalise()
                     rec = rc.record.to_json()
-                    return Result.success("resolve", data={
-                        "kind": "channel",
-                        "record": rec,
-                        "cost": cost.to_json(),
-                        "human": json.dumps(rec, indent=2, sort_keys=True),
-                    })
+                    return Result.success(
+                        "resolve",
+                        data={
+                            "kind": "channel",
+                            "record": rec,
+                            "cost": cost.to_json(),
+                            "human": json.dumps(rec, indent=2, sort_keys=True),
+                        },
+                    )
                 ru = resolver.resolve_user(args.value)
                 resolver.save_caches()
                 cost.finalise()
                 rec = ru.record.to_json()
-                return Result.success("resolve", data={
-                    "kind": "user",
-                    "record": rec,
-                    "cost": cost.to_json(),
-                    "human": json.dumps(rec, indent=2, sort_keys=True),
-                })
+                return Result.success(
+                    "resolve",
+                    data={
+                        "kind": "user",
+                        "record": rec,
+                        "cost": cost.to_json(),
+                        "human": json.dumps(rec, indent=2, sort_keys=True),
+                    },
+                )
             except (LookupError, ValueError) as e:
                 cost.finalise()
                 return Result.failure(
-                    "resolve", ExitCode.RESOLUTION_FAILED, "resolution_failed", str(e),
+                    "resolve",
+                    ExitCode.RESOLUTION_FAILED,
+                    "resolution_failed",
+                    str(e),
                     data={"cost": cost.to_json()},
                 )
     except LockTimeoutError as e:
@@ -445,7 +533,9 @@ def _cmd_resolve(args: argparse.Namespace) -> Result:
     except SlackWebError as e:
         cost.finalise()
         return Result.failure(
-            "resolve", _classify_slack_error(e), e.error or "permanent_api",
+            "resolve",
+            _classify_slack_error(e),
+            e.error or "permanent_api",
             f"Slack API error during resolve: {e}",
             data={"cost": cost.to_json()},
         )
@@ -458,7 +548,9 @@ def _cmd_doctor(args: argparse.Namespace) -> Result:
         return bundle
     if not has_storage_state(state_dir):
         return Result.failure(
-            "doctor", ExitCode.NO_LOGIN, "no_login",
+            "doctor",
+            ExitCode.NO_LOGIN,
+            "no_login",
             "Playwright storage state missing. Run `slackwright login` again.",
         )
     cost = CostTracker()
@@ -468,39 +560,52 @@ def _cmd_doctor(args: argparse.Namespace) -> Result:
     except SlackWebError as e:
         cost.finalise()
         return Result.failure(
-            "doctor", _classify_slack_error(e), e.error or "permanent_api",
+            "doctor",
+            _classify_slack_error(e),
+            e.error or "permanent_api",
             f"auth.test failed: {e}",
             data={"cost": cost.to_json()},
         )
     cost.finalise()
-    return Result.success("doctor", data={
-        "auth_test": r,
-        "user_id": r.get("user"),
-        "team_id": r.get("team"),
-        "cost": cost.to_json(),
-        "human": (
-            f"OK — auth.test → user={r.get('user')}, team={r.get('team')}, "
-            f"team_url={r.get('url')}"
-        ),
-    })
+    return Result.success(
+        "doctor",
+        data={
+            "auth_test": r,
+            "user_id": r.get("user"),
+            "team_id": r.get("team"),
+            "cost": cost.to_json(),
+            "human": (
+                f"OK — auth.test → user={r.get('user')}, team={r.get('team')}, "
+                f"team_url={r.get('url')}"
+            ),
+        },
+    )
 
 
 def _cmd_describe_archive(args: argparse.Namespace) -> Result:
     out = Path(args.path).expanduser().resolve()
     if not out.exists():
         return Result.failure(
-            "describe-archive", ExitCode.IO, "io",
+            "describe-archive",
+            ExitCode.IO,
+            "io",
             f"path does not exist: {out}",
         )
     idx = read_index(out)
     if idx is None:
         return Result.failure(
-            "describe-archive", ExitCode.IO, "io",
+            "describe-archive",
+            ExitCode.IO,
+            "io",
             f"no _index.yaml found at {out} — is this a slackwright output directory?",
         )
-    n_messages = sum(1 for _ in (out / "messages").rglob("*.json")) if (out / "messages").exists() else 0
+    n_messages = (
+        sum(1 for _ in (out / "messages").rglob("*.json")) if (out / "messages").exists() else 0
+    )
     n_users = sum(1 for _ in (out / "_users").glob("*.yaml")) if (out / "_users").exists() else 0
-    n_channels = sum(1 for _ in (out / "_channels").glob("*.yaml")) if (out / "_channels").exists() else 0
+    n_channels = (
+        sum(1 for _ in (out / "_channels").glob("*.yaml")) if (out / "_channels").exists() else 0
+    )
     n_files = sum(1 for _ in (out / "_files").iterdir()) if (out / "_files").exists() else 0
     data = {
         "path": str(out),
@@ -534,12 +639,15 @@ def _cmd_report(args: argparse.Namespace) -> Result:
         written = render_report(out, target=target, title=args.title)
     except FileNotFoundError as e:
         return Result.failure("report", ExitCode.IO, "io", str(e))
-    return Result.success("report", data={
-        "input": str(out),
-        "report_path": str(written),
-        "size_bytes": written.stat().st_size,
-        "human": f"wrote {written} ({written.stat().st_size:,} bytes)",
-    })
+    return Result.success(
+        "report",
+        data={
+            "input": str(out),
+            "report_path": str(written),
+            "size_bytes": written.stat().st_size,
+            "human": f"wrote {written} ({written.stat().st_size:,} bytes)",
+        },
+    )
 
 
 def _cmd_fetch(args: argparse.Namespace) -> Result:
@@ -549,8 +657,9 @@ def _cmd_fetch(args: argparse.Namespace) -> Result:
         return bundle
 
     if args.days is not None and (args.since or args.until):
-        return Result.failure("fetch", ExitCode.USAGE, "usage",
-                              "--days is mutually exclusive with --since/--until")
+        return Result.failure(
+            "fetch", ExitCode.USAGE, "usage", "--days is mutually exclusive with --since/--until"
+        )
 
     date_from: dt.date | None = None
     date_to: dt.date | None = None
@@ -577,6 +686,7 @@ def _cmd_fetch(args: argparse.Namespace) -> Result:
     deadline = None
     if args.timeout is not None:
         import time as _time
+
         deadline = _time.monotonic() + max(1, int(args.timeout))
 
     # ---- explain-only fast path: try cache-only resolution first; only
@@ -584,19 +694,28 @@ def _cmd_fetch(args: argparse.Namespace) -> Result:
     if explain_only:
         try:
             plan = _resolve_plan_explain(
-                args=args, state_dir=state_dir, bundle=bundle, cost=cost,
-                date_from=date_from, date_to=date_to,
+                args=args,
+                state_dir=state_dir,
+                bundle=bundle,
+                cost=cost,
+                date_from=date_from,
+                date_to=date_to,
             )
         except (LookupError, ValueError) as e:
             cost.finalise()
             return Result.failure(
-                "fetch", ExitCode.RESOLUTION_FAILED, "resolution_failed", str(e),
+                "fetch",
+                ExitCode.RESOLUTION_FAILED,
+                "resolution_failed",
+                str(e),
                 data={"cost": cost.to_json()},
             )
         except SlackWebError as e:
             cost.finalise()
             return Result.failure(
-                "fetch", _classify_slack_error(e), e.error or "permanent_api",
+                "fetch",
+                _classify_slack_error(e),
+                e.error or "permanent_api",
                 f"Slack API error during resolve: {e}",
                 data={"cost": cost.to_json()},
             )
@@ -607,24 +726,29 @@ def _cmd_fetch(args: argparse.Namespace) -> Result:
             sys.stderr.write(f"[slackwright] plan: {plan_summary}\n")
             sys.stderr.write(f"[slackwright] query: {rendered_query!r}\n")
         cost.finalise()
-        return Result.success("fetch", data={
-            "explained": True,
-            "plan": plan_summary,
-            "query": rendered_query,
-            "chunks": chunks,
-            "expected_chunk_count": len(chunks),
-            "cost": cost.to_json(),
-            "human": (
-                f"plan:  {plan_summary}\n"
-                f"query: {rendered_query}\n"
-                f"chunks ({len(chunks)}):\n  "
-                + "\n  ".join(c["label"] for c in chunks)
-            ),
-        })
+        return Result.success(
+            "fetch",
+            data={
+                "explained": True,
+                "plan": plan_summary,
+                "query": rendered_query,
+                "chunks": chunks,
+                "expected_chunk_count": len(chunks),
+                "cost": cost.to_json(),
+                "human": (
+                    f"plan:  {plan_summary}\n"
+                    f"query: {rendered_query}\n"
+                    f"chunks ({len(chunks)}):\n  " + "\n  ".join(c["label"] for c in chunks)
+                ),
+            },
+        )
 
     try:
         with SlackWebClient.open(
-            bundle, state_dir=state_dir, headed=args.headed, cost=cost,
+            bundle,
+            state_dir=state_dir,
+            headed=args.headed,
+            cost=cost,
             executable_path=args.executable_path,
         ) as client:
             resolver = EntityResolver(client, state_dir=state_dir)
@@ -633,7 +757,9 @@ def _cmd_fetch(args: argparse.Namespace) -> Result:
                     from_user=resolver.resolve_user(args.from_user) if args.from_user else None,
                     to_user=resolver.resolve_user(args.to_user) if args.to_user else None,
                     with_user=resolver.resolve_user(args.with_user) if args.with_user else None,
-                    in_channel=resolver.resolve_channel(args.in_channel) if args.in_channel else None,
+                    in_channel=resolver.resolve_channel(args.in_channel)
+                    if args.in_channel
+                    else None,
                     extra_query=args.extra_query,
                     date_from=date_from,
                     date_to=date_to,
@@ -642,7 +768,10 @@ def _cmd_fetch(args: argparse.Namespace) -> Result:
             except (LookupError, ValueError) as e:
                 cost.finalise()
                 return Result.failure(
-                    "fetch", ExitCode.RESOLUTION_FAILED, "resolution_failed", str(e),
+                    "fetch",
+                    ExitCode.RESOLUTION_FAILED,
+                    "resolution_failed",
+                    str(e),
                     data={"cost": cost.to_json()},
                 )
 
@@ -685,7 +814,9 @@ def _cmd_fetch(args: argparse.Namespace) -> Result:
     except SlackWebError as e:
         cost.finalise()
         return Result.failure(
-            "fetch", _classify_slack_error(e), e.error or "permanent_api",
+            "fetch",
+            _classify_slack_error(e),
+            e.error or "permanent_api",
             f"Slack API error: {e}",
             data={"cost": cost.to_json()},
         )
@@ -730,7 +861,10 @@ def _resolve_plan_explain(
     # only way --explain can return a complete plan when names aren't yet
     # in the on-disk cache.
     with SlackWebClient.open(
-        bundle, state_dir=state_dir, headed=False, cost=cost,
+        bundle,
+        state_dir=state_dir,
+        headed=False,
+        cost=cost,
     ) as client:
         live_resolver = EntityResolver(client, state_dir=state_dir)
         plan = _try_resolve(live_resolver)
@@ -756,14 +890,18 @@ def _fetch_run(
 ) -> Result:
     progress.start()
     runner = SearchRunner(
-        client, resolver,
+        client,
+        resolver,
         on_progress=progress.note,
         skip_chunks=skip_chunks,
         deadline=deadline,
     )
     writer = ArchiveWriter(
-        out, resolver=resolver, sa_user_id=bundle.user_id,
-        format=args.format, plan_summary=plan_summary,
+        out,
+        resolver=resolver,
+        sa_user_id=bundle.user_id,
+        format=args.format,
+        plan_summary=plan_summary,
     )
     all_messages: list[dict[str, Any]] = []
     try:
@@ -779,21 +917,36 @@ def _fetch_run(
         progress.stop()
         cost.finalise()
         return Result.failure(
-            "fetch", ExitCode.TRANSIENT_API, "fetch_timeout", str(e),
+            "fetch",
+            ExitCode.TRANSIENT_API,
+            "fetch_timeout",
+            str(e),
             data=_finalise_run(
-                writer=writer, resolver=resolver, runner=runner, args=args,
-                client=client, all_messages=all_messages,
-                plan_summary=plan_summary, rendered_query=rendered_query,
-                out=out, cost=cost,
+                writer=writer,
+                resolver=resolver,
+                runner=runner,
+                args=args,
+                client=client,
+                all_messages=all_messages,
+                plan_summary=plan_summary,
+                rendered_query=rendered_query,
+                out=out,
+                cost=cost,
             ),
         )
 
     progress.stop()
     data = _finalise_run(
-        writer=writer, resolver=resolver, runner=runner, args=args,
-        client=client, all_messages=all_messages,
-        plan_summary=plan_summary, rendered_query=rendered_query,
-        out=out, cost=cost,
+        writer=writer,
+        resolver=resolver,
+        runner=runner,
+        args=args,
+        client=client,
+        all_messages=all_messages,
+        plan_summary=plan_summary,
+        rendered_query=rendered_query,
+        out=out,
+        cost=cost,
     )
     return Result.success("fetch", data=data)
 
@@ -899,22 +1052,26 @@ def _finalise_run(
 def _plan_chunks(plan: SearchPlan) -> list[dict[str, Any]]:
     """Pre-compute the chunk schedule for `--explain` output."""
     if plan.date_from is None and plan.date_to is None:
-        return [{
-            "label": chunk_label(None, None),
-            "after": None,
-            "before": None,
-            "query": build_query(plan),
-        }]
+        return [
+            {
+                "label": chunk_label(None, None),
+                "after": None,
+                "before": None,
+                "query": build_query(plan),
+            }
+        ]
     a = plan.date_from or dt.date(2010, 1, 1)
     b = plan.date_to or dt.date.today()
     out: list[dict[str, Any]] = []
     for c0, c1 in month_chunks(a, b):
-        out.append({
-            "label": chunk_label(c0, c1),
-            "after": c0.isoformat(),
-            "before": c1.isoformat(),
-            "query": build_query(plan, after=c0, before=c1),
-        })
+        out.append(
+            {
+                "label": chunk_label(c0, c1),
+                "after": c0.isoformat(),
+                "before": c1.isoformat(),
+                "query": build_query(plan, after=c0, before=c1),
+            }
+        )
     return out
 
 
@@ -935,8 +1092,17 @@ def _redact(d: dict[str, object]) -> dict[str, object]:
 
 def _classify_slack_error(err: SlackWebError) -> ExitCode:
     msg = (err.error or str(err)).lower()
-    if any(k in msg for k in ("ratelimited", "rate_limit", "transport", "timeout",
-                               "service_unavailable", "internal_error")):
+    if any(
+        k in msg
+        for k in (
+            "ratelimited",
+            "rate_limit",
+            "transport",
+            "timeout",
+            "service_unavailable",
+            "internal_error",
+        )
+    ):
         return ExitCode.TRANSIENT_API
     return ExitCode.PERMANENT_API
 
@@ -980,8 +1146,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd is None:
         if args.json:
             return _emit_result(
-                Result.failure("(none)", ExitCode.USAGE, "usage",
-                               "no subcommand supplied"),
+                Result.failure("(none)", ExitCode.USAGE, "usage", "no subcommand supplied"),
                 as_json=True,
             )
         parser.print_help()
@@ -996,8 +1161,7 @@ def main(argv: list[str] | None = None) -> int:
         result = handler(args)
     except KeyboardInterrupt:
         return _emit_result(
-            Result.failure(args.cmd, ExitCode.INTERRUPTED, "interrupted",
-                           "interrupted by user"),
+            Result.failure(args.cmd, ExitCode.INTERRUPTED, "interrupted", "interrupted by user"),
             as_json=args.json,
         )
     except FileNotFoundError as e:
@@ -1014,8 +1178,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "fetch" and getattr(args, "verbose", False):
             traceback.print_exc()
         return _emit_result(
-            Result.failure(args.cmd, ExitCode.PERMANENT_API, "unknown",
-                           f"unhandled error: {e}"),
+            Result.failure(args.cmd, ExitCode.PERMANENT_API, "unknown", f"unhandled error: {e}"),
             as_json=args.json,
         )
     return _emit_result(result, as_json=args.json)

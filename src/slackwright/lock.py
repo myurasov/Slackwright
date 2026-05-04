@@ -83,8 +83,9 @@ class StateLock:
     def _lock(self, *, timeout: float | None) -> None:
         if sys.platform == "win32":
             self._lock_windows(timeout=timeout)
-        elif sys.platform in {"darwin", "linux", "linux2", "freebsd"} or \
-                sys.platform.startswith("linux"):
+        elif sys.platform in {"darwin", "linux", "linux2", "freebsd"} or sys.platform.startswith(
+            "linux"
+        ):
             self._lock_unix(timeout=timeout)
         else:
             sys.stderr.write(

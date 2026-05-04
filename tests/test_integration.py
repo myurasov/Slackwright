@@ -36,8 +36,14 @@ from slackwright.resolver import EntityResolver, ResolvedUser, UserRecord
 from slackwright.search import SearchPlan, SearchRunner
 
 
-def _match(channel_id: str, ts: str, *, user: str = "UALICE00",
-           text: str = "hi", channel_name: str = "general") -> dict[str, Any]:
+def _match(
+    channel_id: str,
+    ts: str,
+    *,
+    user: str = "UALICE00",
+    text: str = "hi",
+    channel_name: str = "general",
+) -> dict[str, Any]:
     return {
         "channel": {"id": channel_id, "name": channel_name},
         "ts": ts,
@@ -52,20 +58,22 @@ def _u(uid: str, handle: str | None) -> ResolvedUser:
 
 
 class TestEndToEndArchive:
-    def test_fetch_writes_full_archive(self, state_dir: Path, out_dir: Path,
-                                       fake_client) -> None:
+    def test_fetch_writes_full_archive(self, state_dir: Path, out_dir: Path, fake_client) -> None:
         # Mock search results.
         fake_client.register(
             "search.modules.messages",
             {
                 "ok": True,
                 "items": [
-                    _match("CGENERAL", "1745613600.000000", user="UALICE00",
-                           text="hello team"),
-                    _match("CGENERAL", "1745613601.000000", user="UBOB0001",
-                           text="hi alice"),
-                    _match("DBOB0001", "1745613602.000000", user="UBOB0001",
-                           text="DM only", channel_name="UBOB0001"),
+                    _match("CGENERAL", "1745613600.000000", user="UALICE00", text="hello team"),
+                    _match("CGENERAL", "1745613601.000000", user="UBOB0001", text="hi alice"),
+                    _match(
+                        "DBOB0001",
+                        "1745613602.000000",
+                        user="UBOB0001",
+                        text="DM only",
+                        channel_name="UBOB0001",
+                    ),
                 ],
                 "paging": {"total": 3, "pages": 1},
             },
@@ -78,8 +86,13 @@ class TestEndToEndArchive:
 
         plan = SearchPlan(from_user=seed)
         runner = SearchRunner(fake_client, resolver, on_progress=lambda _: None)
-        writer = ArchiveWriter(out_dir, resolver=resolver, sa_user_id="UALICE00",
-                               format="archive", plan_summary=plan.display())
+        writer = ArchiveWriter(
+            out_dir,
+            resolver=resolver,
+            sa_user_id="UALICE00",
+            format="archive",
+            plan_summary=plan.display(),
+        )
 
         all_msgs: list[dict[str, Any]] = []
         for msg in runner.iter_matches(plan):
@@ -94,8 +107,7 @@ class TestEndToEndArchive:
 
         n_users = writer.write_users_cache(resolver)
         n_chans = writer.write_channels_cache(resolver)
-        idx_path = writer.write_index(plan_summary=plan.display(),
-                                      search_query="from:@alice")
+        idx_path = writer.write_index(plan_summary=plan.display(), search_query="from:@alice")
 
         # --- post-conditions: per-message JSON files exist
         msg_files = sorted(out_dir.rglob("messages/*/*/*/*.json"))
