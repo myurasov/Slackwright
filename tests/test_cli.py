@@ -32,18 +32,38 @@ def parser():
 
 
 class TestLogin:
-    def test_requires_workspace(self, parser) -> None:
-        with pytest.raises(SystemExit):
-            parser.parse_args(["login"])
-
     def test_workspace_short(self, parser) -> None:
         ns = parser.parse_args(["login", "--workspace", "acme"])
         assert ns.cmd == "login"
         assert ns.workspace == "acme"
+        assert ns.api_token is None
+        assert ns.cookie_d is None
 
     def test_default_timeout(self, parser) -> None:
         ns = parser.parse_args(["login", "--workspace", "acme"])
         assert ns.timeout == 300
+
+    def test_non_interactive_flags(self, parser) -> None:
+        ns = parser.parse_args([
+            "login",
+            "--workspace", "https://acme.slack.com",
+            "--token", "xoxc-abc",
+            "--cookie-d", "xoxd-def",
+            "--user-id", "UALICE00",
+            "--user-email", "alice@example.com",
+            "--team-id", "T12345",
+        ])
+        assert ns.api_token == "xoxc-abc"
+        assert ns.cookie_d == "xoxd-def"
+        assert ns.user_id == "UALICE00"
+        assert ns.user_email == "alice@example.com"
+        assert ns.team_id == "T12345"
+
+    def test_workspace_optional_at_parser(self, parser) -> None:
+        # Validation moved into the handler so non-interactive callers can
+        # pass --token/--cookie-d alone for sanity-check parsing.
+        ns = parser.parse_args(["login"])
+        assert ns.workspace is None
 
 
 class TestFetch:
@@ -106,6 +126,22 @@ class TestFetch:
         ns = parser.parse_args(["fetch", "--dry-run", "--from", "alice"])
         assert ns.dry_run is True
 
+    def test_explain(self, parser) -> None:
+        ns = parser.parse_args(["fetch", "--explain", "--from", "alice"])
+        assert ns.explain is True
+
+    def test_resume(self, parser) -> None:
+        ns = parser.parse_args(["fetch", "--resume", "--from", "alice"])
+        assert ns.resume is True
+
+    def test_stream_json(self, parser) -> None:
+        ns = parser.parse_args(["fetch", "--stream-json", "--from", "alice"])
+        assert ns.stream_json is True
+
+    def test_timeout(self, parser) -> None:
+        ns = parser.parse_args(["fetch", "--timeout", "120"])
+        assert ns.timeout == 120
+
 
 class TestResolve:
     def test_default_kind_auto(self, parser) -> None:
@@ -122,3 +158,43 @@ class TestStateDir:
     def test_global_state_dir_flag(self, parser) -> None:
         ns = parser.parse_args(["--state-dir", "/tmp/sr-state", "whoami"])
         assert ns.state_dir == "/tmp/sr-state"
+
+
+class TestGlobalFlags:
+    def test_json_flag(self, parser) -> None:
+        ns = parser.parse_args(["--json", "whoami"])
+        assert ns.json is True
+
+    def test_quiet_flag_short(self, parser) -> None:
+        ns = parser.parse_args(["-q", "whoami"])
+        assert ns.quiet is True
+
+    def test_quiet_flag_long(self, parser) -> None:
+        ns = parser.parse_args(["--quiet", "whoami"])
+        assert ns.quiet is True
+
+    def test_schema_flag(self, parser) -> None:
+        ns = parser.parse_args(["--schema"])
+        assert ns.schema is True
+
+
+class TestNewSubcommands:
+    def test_describe_archive(self, parser) -> None:
+        ns = parser.parse_args(["describe-archive", "/tmp/some-out"])
+        assert ns.cmd == "describe-archive"
+        assert ns.path == "/tmp/some-out"
+
+    def test_report_default_target(self, parser) -> None:
+        ns = parser.parse_args(["report", "/tmp/some-out"])
+        assert ns.cmd == "report"
+        assert ns.path == "/tmp/some-out"
+        assert ns.report_out is None
+
+    def test_report_custom_target(self, parser) -> None:
+        ns = parser.parse_args([
+            "report", "/tmp/some-out",
+            "--out", "/tmp/myreport.html",
+            "--title", "Q2 fetch",
+        ])
+        assert ns.report_out == "/tmp/myreport.html"
+        assert ns.title == "Q2 fetch"
