@@ -35,6 +35,17 @@ def _write_executable(path: Path, text: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
+def _seed_dep_entrypoints(venv: Path, *, with_driver: bool = True) -> None:
+    bin_dir = venv / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("python", "playwright", "pytest", "ruff"):
+        _write_executable(bin_dir / name, "#!/usr/bin/env bash\n")
+    if with_driver:
+        driver_dir = venv / "lib" / "python3.12" / "site-packages" / "playwright" / "driver"
+        driver_dir.mkdir(parents=True, exist_ok=True)
+        _write_executable(driver_dir / "node", "#!/usr/bin/env bash\n")
+
+
 def _fake_venv(tmp_path: Path) -> tuple[Path, Path, Path]:
     venv = tmp_path / "venv"
     bin_dir = venv / "bin"
@@ -154,6 +165,16 @@ if [ "${FAKE_UV_FAIL_FIRST:-}" = "1" ] && [ ! -f "${FAKE_UV_LOG}.failed" ]; then
   touch "${FAKE_UV_LOG}.failed"
   exit 1
 fi
+if [ "$1" = "pip" ]; then
+  mkdir -p "${FAKE_VENV}/bin"
+  for name in python playwright pytest ruff; do
+    printf '#!/usr/bin/env bash\n' > "${FAKE_VENV}/bin/${name}"
+    chmod +x "${FAKE_VENV}/bin/${name}"
+  done
+  mkdir -p "${FAKE_VENV}/lib/python3.12/site-packages/playwright/driver"
+  printf '#!/usr/bin/env bash\n' > "${FAKE_VENV}/lib/python3.12/site-packages/playwright/driver/node"
+  chmod +x "${FAKE_VENV}/lib/python3.12/site-packages/playwright/driver/node"
+fi
 """,
     )
     command = "\n".join(
@@ -170,6 +191,7 @@ fi
         {
             "FAKE_UV_FAIL_FIRST": "1" if fail_first else "0",
             "FAKE_UV_LOG": str(uv_log),
+            "FAKE_VENV": str(venv),
             "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
         }
     )
@@ -199,6 +221,27 @@ def test_ensure_deps_resyncs_when_install_stamp_is_stale(tmp_path: Path) -> None
 
     assert result.returncode == 0, result.stderr
     assert uv_log.read_text() == "pip install -e .[dev] --quiet\n"
+
+
+def test_ensure_deps_resyncs_when_playwright_driver_is_missing(tmp_path: Path) -> None:
+    venv = tmp_path / "venv"
+    _seed_dep_entrypoints(venv, with_driver=False)
+    install_stamp = venv / ".slackwright-installed"
+    install_stamp.touch()
+    uv_log = tmp_path / "uv.log"
+
+    result = _run_ensure_deps(
+        tmp_path=tmp_path,
+        venv=venv,
+        install_stamp=install_stamp,
+        uv_log=uv_log,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert uv_log.read_text() == "pip install -e .[dev] --quiet\n"
+    assert (
+        venv / "lib" / "python3.12" / "site-packages" / "playwright" / "driver" / "node"
+    ).exists()
 
 
 def test_ensure_deps_recreates_venv_when_sync_fails(tmp_path: Path) -> None:

@@ -56,17 +56,37 @@ ensure_venv() {
   fi
 }
 
+playwright_driver_ready() {
+  local node
+  for node in "$VENV_DIR"/lib/python*/site-packages/playwright/driver/node \
+              "$VENV_DIR"/lib/python*/site-packages/playwright/driver/node.exe; do
+    if [ -x "$node" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+deps_ready() {
+  [ -x "$VENV_DIR/bin/python" ] || return 1
+  [ -x "$VENV_DIR/bin/playwright" ] || return 1
+  [ -x "$VENV_DIR/bin/pytest" ] || return 1
+  [ -x "$VENV_DIR/bin/ruff" ] || return 1
+  playwright_driver_ready || return 1
+}
+
 sync_deps() {
   log "syncing dependencies (uv pip install -e \".[dev]\")"
-  if uv pip install -e ".[dev]" --quiet; then
+  if uv pip install -e ".[dev]" --quiet && deps_ready; then
     touch "$INSTALL_STAMP"
     return
   fi
 
-  warn "dependency sync failed; recreating $VENV_DIR and retrying"
+  warn "dependency sync failed or incomplete; recreating $VENV_DIR and retrying"
   rm -rf "$VENV_DIR"
   ensure_venv
   uv pip install -e ".[dev]" --quiet
+  deps_ready || die "dependency sync finished, but Playwright is incomplete; try ./slackwright clean && ./slackwright install"
   touch "$INSTALL_STAMP"
 }
 
@@ -75,13 +95,10 @@ ensure_deps() {
   if [ "$force" = "--force" ] || \
      [ ! -f "$INSTALL_STAMP" ] || \
      [ "pyproject.toml" -nt "$INSTALL_STAMP" ] || \
-     [ ! -x "$VENV_DIR/bin/playwright" ] || \
-     [ ! -x "$VENV_DIR/bin/pytest" ] || \
-     [ ! -x "$VENV_DIR/bin/ruff" ]; then
+     ! deps_ready; then
     sync_deps
   fi
 }
-
 
 ensure_browser() {
   # Playwright stores browsers under $PLAYWRIGHT_BROWSERS_PATH or its
