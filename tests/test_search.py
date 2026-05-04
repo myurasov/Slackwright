@@ -33,7 +33,9 @@ from slackwright.search import (
     SEARCH_PER_PAGE,
     SearchPlan,
     SearchRunner,
+    SearchTimeoutError,
     build_query,
+    chunk_label,
     days_back,
     month_chunks,
     parse_date,
@@ -254,3 +256,87 @@ class TestSearchRunnerSoftEmpty:
         runner = _make_runner(state_dir, fake_client)
         out = runner.run(SearchPlan(from_user=_u("UALICE00", "alice")))
         assert out == []
+
+
+# ---------------------------------------------------------------------------
+# chunk_label + skip_chunks (resume) + deadline (timeout)
+# ---------------------------------------------------------------------------
+
+
+class TestChunkLabel:
+    def test_no_dates(self) -> None:
+        assert chunk_label(None, None) == "(all time)"
+
+    def test_with_dates(self) -> None:
+        assert chunk_label(dt.date(2026, 4, 1), dt.date(2026, 4, 30)) == "2026-04-01..2026-04-30"
+
+    def test_one_sided(self) -> None:
+        assert chunk_label(dt.date(2026, 1, 1), None) == "2026-01-01..*"
+        assert chunk_label(None, dt.date(2026, 1, 1)) == "*..2026-01-01"
+
+
+class TestSearchRunnerResume:
+    def test_skip_chunks_filters_out(self, state_dir: Path, fake_client) -> None:
+        # Two chunks (March + April). Pre-mark April as done; only March
+        # should run.
+        seen_queries: list[str] = []
+
+        def handler(body: dict[str, Any]) -> dict[str, Any]:
+            seen_queries.append(body["query"])
+            return {"ok": True, "items": [], "paging": {"total": 0, "pages": 0}}
+
+        fake_client.register_handler("search.modules.messages", handler)
+        resolver = EntityResolver(fake_client, state_dir=state_dir)
+        runner = SearchRunner(
+            fake_client, resolver, on_progress=lambda _: None,
+            skip_chunks={"2026-04-01..2026-04-30"},
+        )
+        plan = SearchPlan(
+            from_user=_u("UALICE00", "alice"),
+            date_from=dt.date(2026, 3, 1),
+            date_to=dt.date(2026, 4, 30),
+        )
+        list(runner.iter_matches(plan))
+        # April should have been skipped — only March query was sent.
+        joined = " | ".join(seen_queries)
+        assert "after:2026-02-28" in joined or "after:2026-03-01" not in seen_queries[0]
+        assert "after:2026-03-31" not in joined  # would mean April ran
+        assert runner.stats.chunks_skipped == ["2026-04-01..2026-04-30"]
+
+    def test_chunks_completed_recorded(self, state_dir: Path, fake_client) -> None:
+        fake_client.register(
+            "search.modules.messages",
+            {"ok": True, "items": [], "paging": {"total": 0, "pages": 0}},
+        )
+        resolver = EntityResolver(fake_client, state_dir=state_dir)
+        runner = SearchRunner(fake_client, resolver, on_progress=lambda _: None)
+        plan = SearchPlan(
+            from_user=_u("UALICE00", "alice"),
+            date_from=dt.date(2026, 3, 1),
+            date_to=dt.date(2026, 4, 30),
+        )
+        list(runner.iter_matches(plan))
+        assert "2026-04-01..2026-04-30" in runner.stats.chunks_completed
+        assert "2026-03-01..2026-03-31" in runner.stats.chunks_completed
+
+
+class TestSearchRunnerDeadline:
+    def test_deadline_in_past_aborts_immediately(self, state_dir: Path, fake_client) -> None:
+        import time as _time
+        fake_client.register(
+            "search.modules.messages",
+            {"ok": True, "items": [], "paging": {"total": 0, "pages": 0}},
+        )
+        resolver = EntityResolver(fake_client, state_dir=state_dir)
+        runner = SearchRunner(
+            fake_client, resolver,
+            on_progress=lambda _: None,
+            deadline=_time.monotonic() - 1,  # already past
+        )
+        plan = SearchPlan(
+            from_user=_u("UALICE00", "alice"),
+            date_from=dt.date(2026, 3, 1),
+            date_to=dt.date(2026, 4, 30),
+        )
+        with pytest.raises(SearchTimeoutError):
+            list(runner.iter_matches(plan))

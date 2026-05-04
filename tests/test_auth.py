@@ -19,14 +19,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from slackwright.auth import (
     AuthBundle,
     is_plausible_api_token,
     load_auth,
+    login_non_interactive,
     normalize_workspace_url,
     save_auth,
     workspace_to_api_url,
 )
+from slackwright.paths import storage_state_path
 
 
 class TestNormalizeWorkspaceUrl:
@@ -86,8 +90,6 @@ class TestSaveAndLoadAuth:
         assert loaded.team_id == auth_bundle.team_id
 
     def test_load_missing_raises(self, state_dir: Path) -> None:
-        import pytest
-
         with pytest.raises(FileNotFoundError):
             load_auth(state_dir)
 
@@ -96,3 +98,61 @@ class TestSaveAndLoadAuth:
         d = json.loads((state_dir / "auth.json").read_text())
         assert d["user_email"] == "alice@example.com"
         assert "api_token" in d  # token is stored verbatim
+
+
+class TestLoginNonInteractive:
+    def test_persists_bundle_and_storage_state(self, state_dir: Path) -> None:
+        bundle = login_non_interactive(
+            workspace_url="https://acme.slack.com",
+            api_token="xoxc-test-token",
+            cookie_d="xoxd-test-cookie",
+            state_dir=state_dir,
+            user_id="UALICE00",
+            user_email="alice@example.com",
+            team_id="T12345",
+        )
+        assert bundle.api_token == "xoxc-test-token"
+        assert bundle.workspace_url == "https://acme.slack.com"
+        assert bundle.user_id == "UALICE00"
+        # auth.json round-trips through load_auth
+        loaded = load_auth(state_dir)
+        assert loaded.api_token == "xoxc-test-token"
+        # storage state file exists with the d cookie
+        ssp = storage_state_path(state_dir)
+        assert ssp.exists()
+        ss = json.loads(ssp.read_text())
+        names = {c["name"] for c in ss["cookies"]}
+        assert "d" in names
+        d_cookie = next(c for c in ss["cookies"] if c["name"] == "d")
+        assert d_cookie["value"] == "xoxd-test-cookie"
+        assert d_cookie["domain"] == ".slack.com"
+        assert d_cookie["secure"] is True
+        assert d_cookie["httpOnly"] is True
+
+    def test_rejects_implausible_token(self, state_dir: Path) -> None:
+        with pytest.raises(ValueError, match="api_token"):
+            login_non_interactive(
+                workspace_url="https://acme.slack.com",
+                api_token="not-a-token",
+                cookie_d="xoxd-test",
+                state_dir=state_dir,
+            )
+
+    def test_rejects_non_xoxd_cookie(self, state_dir: Path) -> None:
+        with pytest.raises(ValueError, match="cookie_d"):
+            login_non_interactive(
+                workspace_url="https://acme.slack.com",
+                api_token="xoxc-test",
+                cookie_d="not-a-cookie",
+                state_dir=state_dir,
+            )
+
+    def test_normalises_workspace_short_name(self, state_dir: Path) -> None:
+        bundle = login_non_interactive(
+            workspace_url="acme",
+            api_token="xoxc-test",
+            cookie_d="xoxd-test",
+            state_dir=state_dir,
+        )
+        assert bundle.workspace_url == "https://acme.slack.com"
+        assert bundle.api_url == "https://acme.slack.com/api"

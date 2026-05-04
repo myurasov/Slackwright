@@ -29,6 +29,8 @@ from slackwright.archive import (
     _ts_to_local_date,
     message_filepath,
     message_key_hash,
+    previously_completed_chunks,
+    read_index,
     slugify,
 )
 from slackwright.resolver import (
@@ -234,3 +236,58 @@ class TestArchiveWriterUserChannelCaches:
         assert u_yaml["email"] == "alice@example.com"
         c_yaml = yaml.safe_load((out_dir / "_channels" / "CGENERAL.yaml").read_text())
         assert c_yaml["name"] == "general"
+
+
+# ---------------------------------------------------------------------------
+# read_index + previously_completed_chunks (resume support)
+# ---------------------------------------------------------------------------
+
+
+class TestReadIndex:
+    def test_returns_none_when_missing(self, out_dir: Path) -> None:
+        assert read_index(out_dir) is None
+
+    def test_loads_yaml(self, out_dir: Path) -> None:
+        w = ArchiveWriter(out_dir, sa_user_id="UALICE00", format="archive")
+        w.write_match(_match("CGENERAL", "1745613600.000000"))
+        w.write_index(plan_summary="from=@alice", search_query="from:@alice")
+        idx = read_index(out_dir)
+        assert idx is not None
+        assert idx["tool"] == "slackwright"
+        assert idx["plan"] == "from=@alice"
+
+
+class TestPreviouslyCompletedChunks:
+    def test_empty_when_no_index(self, out_dir: Path) -> None:
+        assert previously_completed_chunks(out_dir) == set()
+
+    def test_empty_when_no_chunks_recorded(self, out_dir: Path) -> None:
+        w = ArchiveWriter(out_dir, sa_user_id="UALICE00", format="archive")
+        w.write_match(_match("CGENERAL", "1745613600.000000"))
+        w.write_index(plan_summary="from=@alice", search_query="from:@alice")
+        assert previously_completed_chunks(out_dir) == set()
+
+    def test_reads_from_extra_search_stats(self, out_dir: Path) -> None:
+        w = ArchiveWriter(out_dir, sa_user_id="UALICE00", format="archive")
+        w.write_match(_match("CGENERAL", "1745613600.000000"))
+        w.write_index(
+            plan_summary="from=@alice",
+            search_query="from:@alice",
+            extra={"search_stats": {
+                "chunks_completed": ["2026-04-01..2026-04-30", "2026-03-01..2026-03-31"],
+            }},
+        )
+        completed = previously_completed_chunks(out_dir)
+        assert completed == {"2026-04-01..2026-04-30", "2026-03-01..2026-03-31"}
+
+    def test_cost_block_in_index(self, out_dir: Path) -> None:
+        w = ArchiveWriter(out_dir, sa_user_id="UALICE00", format="archive")
+        w.write_match(_match("CGENERAL", "1745613600.000000"))
+        w.write_index(
+            plan_summary="from=@alice",
+            search_query="from:@alice",
+            cost={"api_calls": 12, "elapsed_ms": 5000},
+        )
+        idx = read_index(out_dir)
+        assert idx["cost"]["api_calls"] == 12
+        assert idx["cost"]["elapsed_ms"] == 5000

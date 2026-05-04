@@ -335,6 +335,102 @@ def has_storage_state(state_dir: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Non-interactive login (--token / --cookie-d)
+# ---------------------------------------------------------------------------
+
+
+def login_non_interactive(
+    *,
+    workspace_url: str,
+    api_token: str,
+    cookie_d: str,
+    state_dir: Path,
+    user_id: str | None = None,
+    user_name: str | None = None,
+    user_real_name: str | None = None,
+    user_email: str | None = None,
+    team_id: str | None = None,
+    enterprise_id: str | None = None,
+) -> AuthBundle:
+    """Persist a pre-extracted xoxc token + d cookie as if the user had
+    completed the headed login flow.
+
+    Used by CI / automated agents that already hold valid Slack web
+    credentials (e.g. extracted from a previous interactive run on a
+    sibling machine or from a password-manager export). The headed
+    :class:`LoginSession` flow is still the recommended path for
+    interactive users — this is purely an automation escape hatch.
+
+    The supplied cookie is written into a Playwright storage-state JSON
+    file with the right scope so subsequent ``SlackWebClient.open()``
+    calls can replay the session.
+    """
+    import time as _time
+
+    from .paths import storage_state_path
+
+    if not is_plausible_api_token(api_token):
+        raise ValueError(
+            f"api_token does not look like a Slack web token "
+            f"(expected xoxc-/xoxs-/...; got {api_token[:6]!r}…)"
+        )
+    if not cookie_d or not cookie_d.startswith("xoxd-"):
+        raise ValueError(
+            f"cookie_d does not look like a Slack `d` cookie "
+            f"(expected xoxd-…; got {cookie_d[:8]!r}…)"
+        )
+
+    workspace_url = normalize_workspace_url(workspace_url)
+    api_url = workspace_to_api_url(workspace_url)
+    parsed_host = urlparse(workspace_url).netloc
+
+    # Slack's `d` cookie is set on the parent .slack.com domain so it
+    # rides along on every workspace subdomain. Mirror that here so the
+    # session works regardless of which workspace URL we replay against.
+    storage_state = {
+        "cookies": [
+            {
+                "name": "d",
+                "value": cookie_d,
+                "domain": ".slack.com",
+                "path": "/",
+                "expires": -1,
+                "httpOnly": True,
+                "secure": True,
+                "sameSite": "Lax",
+            }
+        ],
+        "origins": [],
+    }
+
+    state_dir.mkdir(parents=True, exist_ok=True)
+    ssp = storage_state_path(state_dir)
+    ssp.write_text(json.dumps(storage_state, indent=2, sort_keys=True))
+    with contextlib.suppress(OSError):
+        os.chmod(ssp, 0o600)
+
+    bundle = AuthBundle(
+        workspace_url=workspace_url,
+        api_url=api_url,
+        api_token=api_token,
+        team_id=team_id,
+        enterprise_id=enterprise_id,
+        user_id=user_id or "",
+        user_name=user_name,
+        user_real_name=user_real_name,
+        user_email=user_email,
+        extracted_at=_time.time(),
+        storage_state_path=str(ssp),
+    )
+    save_auth(state_dir, bundle)
+    sys.stderr.write(
+        f"[slackwright] login (non-interactive): persisted token + cookie for "
+        f"{parsed_host} -> {state_dir}\n"
+    )
+    return bundle
+
+
+# ---------------------------------------------------------------------------
 # Validation helpers (small, pure — covered by unit tests)
 # ---------------------------------------------------------------------------
 

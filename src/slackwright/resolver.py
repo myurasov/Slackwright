@@ -400,8 +400,14 @@ class EntityResolver:
         return self._client
 
     def _fetch_user_by_id(self, uid: str) -> UserRecord | None:
+        # Cache-only mode (no client): return None so the caller can fall
+        # back to a stub UserRecord(id=uid). This is what `--explain`
+        # relies on to avoid spinning up Playwright when the input is
+        # already a Slack id.
+        if self._client is None:
+            return None
         try:
-            data = self._need_client().api("users.info", {"user": uid})
+            data = self._client.api("users.info", {"user": uid})
         except SlackWebError as e:
             if e.error in {"user_not_found", "users_not_found"}:
                 return None
@@ -418,8 +424,11 @@ class EntityResolver:
         return _user_from_payload(data.get("user") or {})
 
     def _fetch_channel_by_id(self, cid: str) -> ChannelRecord | None:
+        # Same cache-only escape hatch as _fetch_user_by_id.
+        if self._client is None:
+            return None
         try:
-            data = self._need_client().api("conversations.info", {"channel": cid})
+            data = self._client.api("conversations.info", {"channel": cid})
         except SlackWebError as e:
             if e.error in {"channel_not_found"}:
                 return None

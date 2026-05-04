@@ -338,7 +338,8 @@ class ArchiveWriter:
         return n
 
     def write_index(self, *, plan_summary: str, search_query: str | None = None,
-                    extra: dict[str, Any] | None = None) -> Path:
+                    extra: dict[str, Any] | None = None,
+                    cost: dict[str, Any] | None = None) -> Path:
         idx: dict[str, Any] = {
             "schema_version": 1,
             "tool": "slackwright",
@@ -357,6 +358,8 @@ class ArchiveWriter:
                 "channels_seen": len(self.stats.channel_ids_seen),
             },
         }
+        if cost is not None:
+            idx["cost"] = cost
         if extra:
             idx["extra"] = extra
         target = self._out / "_index.yaml"
@@ -365,6 +368,41 @@ class ArchiveWriter:
             encoding="utf-8",
         )
         return target
+
+
+def read_index(out_dir: Path) -> dict[str, Any] | None:
+    """Load an existing ``_index.yaml`` from a slackwright output dir.
+
+    Returns ``None`` if no index exists. Used by ``--resume`` (to discover
+    which chunks were already completed) and by the ``describe-archive``
+    subcommand.
+    """
+    p = Path(out_dir) / "_index.yaml"
+    if not p.exists():
+        return None
+    try:
+        return yaml.safe_load(p.read_text(encoding="utf-8")) or None
+    except Exception:
+        return None
+
+
+def previously_completed_chunks(out_dir: Path) -> set[str]:
+    """Return chunk labels that the prior run finished successfully.
+
+    Reads from the index's ``extra.search_stats.chunks_completed`` block
+    written by :meth:`ArchiveWriter.write_index`. Empty set if no prior
+    run, or if the prior run didn't record chunk completion (e.g. it was
+    a one-shot fetch with no date range).
+    """
+    idx = read_index(out_dir)
+    if not idx:
+        return set()
+    extra = (idx.get("extra") or {}) if isinstance(idx, dict) else {}
+    ss = (extra.get("search_stats") or {}) if isinstance(extra, dict) else {}
+    completed = ss.get("chunks_completed") or []
+    if not isinstance(completed, list):
+        return set()
+    return {str(c) for c in completed}
 
 
 # ---------------------------------------------------------------------------

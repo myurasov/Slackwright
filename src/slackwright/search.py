@@ -31,6 +31,7 @@ import calendar
 import dataclasses
 import datetime as dt
 import sys
+import time
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -40,6 +41,24 @@ from .resolver import EntityResolver, ResolvedChannel, ResolvedUser
 SEARCH_PER_PAGE = 100
 SEARCH_MAX_PAGE = 100
 SEARCH_MAX_RESULTS = SEARCH_PER_PAGE * SEARCH_MAX_PAGE  # 10_000
+
+
+class SearchTimeoutError(RuntimeError):
+    """Raised when ``SearchRunner`` exceeds its configured ``--timeout``."""
+
+
+def chunk_label(after: dt.date | None, before: dt.date | None) -> str:
+    """Stable, human-readable id for one (after, before) chunk.
+
+    Used both in stderr progress lines and in
+    ``_index.yaml.search_stats.chunks_completed`` so ``--resume`` can
+    pick up where a prior run left off.
+    """
+    if after is None and before is None:
+        return "(all time)"
+    a = after.isoformat() if after else "*"
+    b = before.isoformat() if before else "*"
+    return f"{a}..{b}"
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +228,8 @@ class SearchStats:
     matches_total: int = 0
     matches_unique: int = 0
     chunks: int = 0
+    chunks_completed: list[str] = dataclasses.field(default_factory=list)
+    chunks_skipped: list[str] = dataclasses.field(default_factory=list)
     truncated_chunks: list[str] = dataclasses.field(default_factory=list)
 
 
@@ -228,10 +249,14 @@ class SearchRunner:
         resolver: EntityResolver,
         *,
         on_progress: Callable[[str], None] | None = None,
+        skip_chunks: set[str] | None = None,
+        deadline: float | None = None,
     ) -> None:
         self._client = client
         self._resolver = resolver
         self._on_progress = on_progress or (lambda s: sys.stderr.write(f"[slackwright] {s}\n"))
+        self._skip_chunks = skip_chunks or set()
+        self._deadline = deadline
         self.stats = SearchStats()
 
     # --- public ---
@@ -242,10 +267,15 @@ class SearchRunner:
         self.stats.chunks = len(chunks)
         emitted = 0
         for chunk_idx, (a, b) in enumerate(chunks, start=1):
-            label = f"{a.isoformat()}..{b.isoformat()}" if (a or b) else "(all time)"
+            label = chunk_label(a, b)
+            if label in self._skip_chunks:
+                self.stats.chunks_skipped.append(label)
+                self._on_progress(f"chunk {chunk_idx}/{len(chunks)} {label} — skipping (resume)")
+                continue
             self._on_progress(
                 f"chunk {chunk_idx}/{len(chunks)} {label}  query={build_query(plan, after=a, before=b)!r}"
             )
+            self._check_deadline()
             try:
                 truncated = False
                 for msg in self._iter_chunk(plan, after=a, before=b):
@@ -260,6 +290,7 @@ class SearchRunner:
                     if plan.max_results is not None and emitted >= plan.max_results:
                         self._on_progress(f"hit --max {plan.max_results}; stopping early")
                         return
+                    self._check_deadline()
             except _ChunkTruncated:
                 truncated = True
             if truncated:
@@ -268,7 +299,18 @@ class SearchRunner:
                     f"  WARN: chunk {label} hit search cap ({SEARCH_MAX_RESULTS}); "
                     f"some matches may be missing. Re-run with a narrower window."
                 )
+            self.stats.chunks_completed.append(label)
         self.stats.matches_unique = emitted
+
+    # --- internals ---
+
+    def _check_deadline(self) -> None:
+        if self._deadline is not None and time.monotonic() >= self._deadline:
+            raise SearchTimeoutError(
+                f"fetch timed out after the configured --timeout window; "
+                f"chunks completed: {len(self.stats.chunks_completed)}, "
+                f"unique matches so far: {self.stats.matches_unique}"
+            )
 
     def run(self, plan: SearchPlan) -> list[dict[str, Any]]:
         return list(self.iter_matches(plan))
