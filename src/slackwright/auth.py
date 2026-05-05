@@ -182,11 +182,30 @@ class LoginSession:
         workspace_url: str,
         state_dir: Path,
         executable_path: str | None = None,
+        chrome_profile: Path | str | None = None,
+        profile_directory: str | None = None,
+        prime_storage_state: Path | str | None = None,
     ) -> None:
         self.workspace_url = normalize_workspace_url(workspace_url)
         self.api_url = workspace_to_api_url(self.workspace_url)
         self.state_dir = Path(state_dir)
         self.executable_path = executable_path
+        # When set, launch via Playwright's *persistent* context against
+        # this directory instead of the bundled Chromium with a fresh
+        # one. This is the "use my real Chrome profile" mode — if the
+        # user is already signed into Slack in that profile, the login
+        # window will land directly on the workspace and ``boot_data``
+        # is available immediately.
+        self.chrome_profile = Path(chrome_profile).expanduser() if chrome_profile else None
+        self.profile_directory = profile_directory
+        # When set, the bundled-Chromium fresh-context path loads this
+        # storage-state JSON before navigation. Used by ``--use-chrome``
+        # to replay cookies extracted from the user's Chrome on disk
+        # — sidesteps the persistent-context launch failures we get
+        # when wrapping real Chrome in Playwright.
+        self.prime_storage_state = (
+            Path(prime_storage_state).expanduser() if prime_storage_state else None
+        )
         self._playwright = None
         self._browser = None
         self._context = None
@@ -199,13 +218,62 @@ class LoginSession:
 
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = sync_playwright().start()
-        launch_kwargs: dict[str, Any] = {"headless": False}
-        if self.executable_path:
-            launch_kwargs["executable_path"] = self.executable_path
-        self._browser = self._playwright.chromium.launch(**launch_kwargs)
-        # Use a fresh context — the user is logging in, so we explicitly
-        # start clean rather than re-loading whatever was on disk.
-        self._context = self._browser.new_context(viewport={"width": 1280, "height": 900})
+        if self.chrome_profile is not None:
+            # Persistent-context path: reuses the user's existing Chrome
+            # cookies / localStorage / IndexedDB / ServiceWorkers in
+            # place. Chrome locks the profile while running, so the
+            # user must close their normal Chrome first; we surface a
+            # readable error if Playwright can't acquire the lock.
+            #
+            # Drop two of Playwright's default args that break us here:
+            #   ``--use-mock-keychain`` swaps macOS Keychain for an
+            #     in-memory stub, which means Chrome cannot decrypt the
+            #     cookies in the snapshot (they were encrypted with the
+            #     real Keychain key) — the session looks empty.
+            #   ``--password-store=basic`` similarly tells Chrome to
+            #     bypass the OS credential store; combined with mock
+            #     keychain it kills profile init in some Chrome
+            #     versions, which is the "Browser window not found"
+            #     mode we hit otherwise.
+            launch_kwargs: dict[str, Any] = {
+                "user_data_dir": str(self.chrome_profile),
+                "headless": False,
+                "viewport": {"width": 1280, "height": 900},
+                "ignore_default_args": [
+                    "--use-mock-keychain",
+                    "--password-store=basic",
+                ],
+            }
+            if self.executable_path:
+                launch_kwargs["executable_path"] = self.executable_path
+            if self.profile_directory:
+                launch_kwargs["args"] = [f"--profile-directory={self.profile_directory}"]
+            try:
+                self._context = self._playwright.chromium.launch_persistent_context(
+                    **launch_kwargs,
+                )
+            except Exception as e:
+                self._playwright.stop()
+                self._playwright = None
+                raise RuntimeError(
+                    f"could not launch Chrome with profile {self.chrome_profile}: {e}. "
+                    f"Quit your running Chrome (it holds an exclusive lock on the "
+                    f"profile dir) and retry."
+                ) from e
+            self._browser = None
+        else:
+            launch_kwargs = {"headless": False}
+            if self.executable_path:
+                launch_kwargs["executable_path"] = self.executable_path
+            self._browser = self._playwright.chromium.launch(**launch_kwargs)
+            ctx_kwargs: dict[str, Any] = {"viewport": {"width": 1280, "height": 900}}
+            if self.prime_storage_state and self.prime_storage_state.exists():
+                # ``--use-chrome`` path: cookies were extracted from the
+                # user's Chrome profile on disk and dropped here. Loading
+                # them in means the new Chromium navigates to Slack
+                # already-authenticated; no SSO re-prompt.
+                ctx_kwargs["storage_state"] = str(self.prime_storage_state)
+            self._context = self._browser.new_context(**ctx_kwargs)
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -236,7 +304,20 @@ class LoginSession:
         if self._context is None:
             raise RuntimeError("LoginSession must be used as a context manager")
         page = self._context.new_page()
-        page.goto(self.workspace_url, wait_until="domcontentloaded", timeout=120_000)
+        # Use ``wait_until="commit"`` plus a try/except: Slack's
+        # workspace short-name URL chains through several redirects to
+        # the Enterprise Grid host, and intermediate hops occasionally
+        # surface as ``ERR_HTTP_RESPONSE_CODE_FAILURE`` even though the
+        # final landing page renders fine. Don't abort the whole login
+        # for that — the polling loop below either picks up
+        # ``boot_data`` or the user can hit "reload" themselves.
+        try:
+            page.goto(self.workspace_url, wait_until="commit", timeout=120_000)
+        except Exception as e:
+            sys.stderr.write(
+                f"[slackwright] login: navigation hiccup ({e}); "
+                f"continuing to wait for boot_data.\n"
+            )
         sys.stderr.write(
             f"[slackwright] login: window opened at {self.workspace_url}\n"
             f"  Complete the login flow in the browser. We'll detect the\n"

@@ -151,6 +151,39 @@ def _build_parser() -> argparse.ArgumentParser:
         help="path to a custom Chromium binary (default: Playwright's bundled Chromium).",
     )
     sp.add_argument(
+        "--chrome-profile",
+        help="reuse this Chrome user-data-dir instead of starting fresh — if you're "
+        "already signed into Slack in that profile, login is instant. "
+        "macOS default: '~/Library/Application Support/Google/Chrome'.",
+    )
+    sp.add_argument(
+        "--profile-directory",
+        help="profile name within --chrome-profile (e.g. 'Default', 'Profile 1'). "
+        "Only set if you have multiple Chrome profiles.",
+    )
+    sp.add_argument(
+        "--copy-profile",
+        dest="copy_profile",
+        action="store_true",
+        help="snapshot --chrome-profile to a private copy under the state-dir before "
+        "launching, so your normal Chrome can keep running. Skips browser caches "
+        "to keep the copy small (~tens of MB).",
+    )
+    sp.add_argument(
+        "--no-copy-profile",
+        dest="copy_profile",
+        action="store_false",
+        help="use --chrome-profile in-place; Chrome must be quit first.",
+    )
+    sp.set_defaults(copy_profile=None)
+    sp.add_argument(
+        "--use-chrome",
+        action="store_true",
+        help="shortcut: --chrome-profile + --executable-path set to the system Chrome's "
+        "defaults (currently macOS only) and --copy-profile enabled so Chrome can "
+        "stay open.",
+    )
+    sp.add_argument(
         "--token",
         dest="api_token",
         help="non-interactive: pre-extracted xoxc-... web token. "
@@ -399,17 +432,39 @@ def _cmd_login(args: argparse.Namespace) -> Result:
         )
 
     workspace_url = normalize_workspace_url(args.workspace)
-    sys.stderr.write(
-        f"[slackwright] login: opening {workspace_url} in a headed browser. "
-        f"Sign in there; I'll detect the session automatically.\n"
-    )
+    try:
+        chrome_profile, executable_path, prime_storage_state = _resolve_chrome_profile_args(
+            args, state_dir=state_dir
+        )
+    except (FileNotFoundError, ValueError) as e:
+        return Result.failure("login", ExitCode.USAGE, "usage", str(e))
+    if prime_storage_state:
+        sys.stderr.write(
+            f"[slackwright] login: opening {workspace_url} with cookies pre-loaded "
+            f"from your Chrome profile. If your Slack session is still alive there, "
+            f"the workspace loads instantly with no SSO re-prompt.\n"
+        )
+    elif chrome_profile:
+        sys.stderr.write(
+            f"[slackwright] login: opening {workspace_url} via Chrome profile "
+            f"{chrome_profile}. If you're already signed in there, the workspace "
+            f"will load directly with no further steps.\n"
+        )
+    else:
+        sys.stderr.write(
+            f"[slackwright] login: opening {workspace_url} in a headed browser. "
+            f"Sign in there; I'll detect the session automatically.\n"
+        )
     try:
         with (
             StateLock(state_dir).acquire(timeout=30),
             LoginSession(
                 workspace_url=workspace_url,
                 state_dir=state_dir,
-                executable_path=args.executable_path,
+                executable_path=executable_path,
+                chrome_profile=chrome_profile,
+                profile_directory=args.profile_directory,
+                prime_storage_state=prime_storage_state,
             ) as s,
         ):
             bundle = s.run_interactive(timeout_s=args.timeout)
@@ -870,6 +925,87 @@ def _cmd_fetch(args: argparse.Namespace) -> Result:
             f"Slack API error: {e}",
             data={"cost": cost.to_json()},
         )
+
+
+def _resolve_chrome_profile_args(
+    args: argparse.Namespace, *, state_dir: Path
+) -> tuple[str | None, str | None, Path | None]:
+    """Resolve ``--chrome-profile`` / ``--use-chrome`` / ``--executable-path``.
+
+    Returns ``(chrome_profile, executable_path, prime_storage_state)``.
+
+    For ``--use-chrome`` we no longer launch the user's real Chrome via
+    Playwright at all — that path is plagued by macOS keychain /
+    persistent-context fights (cookies don't decrypt with mock
+    keychain, Chrome won't open a window without it). Instead we
+    decrypt the user's Chrome cookies straight off disk into a
+    Playwright storage-state JSON; the regular bundled-Chromium login
+    path then loads that into a fresh context so Slack sees the user
+    as already-authenticated. ``chrome_profile`` is only honoured for
+    advanced users who pass ``--no-copy-profile`` and accept the
+    persistent-context limitations.
+    """
+    chrome_profile = args.chrome_profile
+    executable_path = args.executable_path
+    use_chrome = getattr(args, "use_chrome", False)
+    if use_chrome and not chrome_profile:
+        # macOS only for now — easy to extend per-platform later.
+        chrome_profile = str(Path.home() / "Library/Application Support/Google/Chrome")
+
+    if not chrome_profile:
+        return None, executable_path, None
+
+    if not args.profile_directory:
+        args.profile_directory = "Default"
+
+    # Default behaviour for ``--use-chrome`` and ``--chrome-profile``
+    # alike: extract cookies into a Playwright storage-state JSON
+    # ("snapshot mode"). Power users who want the legacy persistent-
+    # context launch (driving real Chrome under Playwright with the
+    # profile in-place) opt in via ``--no-copy-profile``.
+    copy_profile = args.copy_profile
+    if copy_profile is None:
+        copy_profile = True
+
+    if copy_profile:
+        from .chrome_cookies import extract_chrome_cookies, write_storage_state
+
+        profile_path = Path(chrome_profile).expanduser()
+        try:
+            cookies = extract_chrome_cookies(
+                profile_path,
+                args.profile_directory,
+                domain_filter=None,
+            )
+        except (FileNotFoundError, NotImplementedError) as e:
+            raise ValueError(str(e)) from e
+        except RuntimeError as e:
+            raise ValueError(
+                f"could not read Chrome cookies: {e}\n"
+                f"If macOS prompted to allow keychain access, click "
+                f"'Always Allow' and retry."
+            ) from e
+        prime = state_dir / "chrome-cookies.json"
+        write_storage_state(cookies, prime)
+        sys.stderr.write(
+            f"[slackwright] login: extracted {len(cookies)} cookies from Chrome "
+            f"profile {profile_path}/{args.profile_directory}.\n"
+        )
+        return None, executable_path, prime
+
+    # ``--no-copy-profile`` keeps the legacy persistent-context path,
+    # warts and all.
+    profile_path = Path(chrome_profile).expanduser()
+    lock = profile_path / "SingletonLock"
+    if lock.exists() or lock.is_symlink():
+        raise ValueError(
+            f"Chrome is currently running and holds an exclusive lock on "
+            f"{profile_path}. Either:\n"
+            f"  - quit Chrome and retry the same command, or\n"
+            f"  - drop --no-copy-profile (we'll extract cookies from the "
+            f"profile on disk so Chrome can keep running)."
+        )
+    return chrome_profile, executable_path, None
 
 
 def _merge_phase_results(results: list[Result], *, involves: bool) -> Result:
