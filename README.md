@@ -18,8 +18,7 @@ search query syntax accepts every standard Slack operator (`from:`,
 
 ## Why?
 
-The official Slack `search.messages` API behind bot apps (and Slack MCP
-integrations like NVIDIA's MaaS Slack server) typically:
+The official Slack `search.messages` API behind bot apps typically:
 
 - only sees DMs / MPIMs / channels the bot is explicitly added to,
 - excludes externally-shared channels by org policy,
