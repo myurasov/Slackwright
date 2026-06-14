@@ -35,3 +35,11 @@ slackwright-out/
 .playwright-browsers/
 
 **/__*
+
+# Solaris ai-pack (embedded mode): keep the private memory layer + runtime MCP out of the repo.
+# The rest of ai/ (engineer.agent.md, engineer.instructions.md, spec.md, manifest.json) + AGENTS.md +
+# CLAUDE.md are the embedded pack and may be committed with the repo.
+ai/memory/
+.secrets.env
+.mcp.json
+.cursor/mcp.json

@@ -1,0 +1,28 @@
+{
+  "_comment": "Managed by Solaris; do not edit by hand. Versions live here (no .version files). No host/deploy/secret specifics - those live in ai/memory/.",
+  "schema_version": 1,
+  "project": {
+    "name": "Slackwright",
+    "slug": "slackwright",
+    "type": "python-cli",
+    "mode": "embedded"
+  },
+  "framework_version": "0.11.0",
+  "plugins": [],
+  "revisions": {
+    "AGENTS.md": {
+      "rev": 5,
+      "hash": "e9c261a5fe10607254b317a08f47268385a86050a1571d35ff48f25456ca1618"
+    },
+    "ai/engineer.agent.md": {
+      "rev": 14,
+      "hash": "f25e43c31a1762be6d4e1357ed677fa46a6024cd0f6eb0e552341162a2d80130"
+    }
+  },
+  "created": "2026-06-13",
+  "info": {
+    "upstream": "github.com/myurasov/Slackwright",
+    "imported_from": "a local working copy (originally local mode; .git preserved); converted to embedded mode 2026-06-14 - flat layout, repo root == slug dir (no projects/<slug>/<repo> container). Provenance detail in ai/memory/context.md (private/gitignored).",
+    "derived_from": "the project's prior bespoke ai/ setup (dev.agent.md, dev.memory.md, spec.txt) + root AGENTS.md"
+  }
+}
