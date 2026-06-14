@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "slackwright"
-version = "0.2.0"
+version = "0.3.0"
 description = "Browser-driven Slack message extractor that bypasses Slack-bot scope limits by using the user's own logged-in web session."
 readme = "README.md"
 license = { text = "Apache-2.0" }
